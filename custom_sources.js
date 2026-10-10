@@ -516,6 +516,10 @@ function createKinokino(component, _object, prefer_dash) {
             hls_retry_timeout: 60000
           };
 
+          // v11: на webOS просим нативный HLS-режим встроенного плеера
+          // (парсер плейлистов + <video> телевизора), MSE на старых webOS слабый
+          if (Lampa.Platform.is('webos')) first.hls_type = 'native';
+
           if (element.season) {
             items.forEach(function (elem) {
               playlist.push({
@@ -609,7 +613,7 @@ function createKinokino(component, _object, prefer_dash) {
             // v9: многоголосый поток умеет только десктопный hls.js; на телефоне и
             // ТВ играем нативными/внешними плеерами mono-поток
             if (Lampa.Platform.is('android')) Lampa.Player.runas('android');
-            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas('webos');
+            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas('lampa'); // v11: на webOS играем встроенным плеером Lampa (парсер+нативное видео), родной «Фото и видео» поток не берёт
             else if (stream_prox && Lampa.Platform.is('tizen')) Lampa.Player.runas('tizen');
             else Lampa.Player.runas('');
           }
