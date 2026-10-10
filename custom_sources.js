@@ -365,10 +365,10 @@ function createKinokino(component, _object, prefer_dash) {
           }
 
           if (playlist.length > 1) first.playlist = playlist;
-          // на Android системные плееры (Mi Video и т.п.) не умеют multi-audio HLS
-          // и DASH — играем встроенным плеером Lampa
+          // встроенный плеер Lampa (webview) сайт-источник блокирует по Origin
+          // (423 на lampa.mx), поэтому по умолчанию играем системным/внешним
+          // плеером; принудительно Lampa — только если пользователь сам выбрал
           if (options && options.runas) Lampa.Player.runas(options.runas);
-          else if (Lampa.Platform.is('android')) Lampa.Player.runas('lampa');
           Lampa.Player.play(first);
           Lampa.Player.playlist(playlist);
 
