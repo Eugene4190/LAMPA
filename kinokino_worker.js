@@ -39,6 +39,7 @@
  * GitHub repository → LAMPA → Entry point: kinokino_worker.js.)
  */
 const LOG = []; // «чёрный ящик»: последние запросы (для удалённой диагностики)
+const PLUGIN_URL = 'https://cdn.jsdelivr.net/gh/Eugene4190/LAMPA@84112042db7fdd33085d2225c0ed69af66936953/online_mod.full.js';
 
 /* v12: мост-кольцо. Антибот источника (interkh.com) банит эдж Cloudflare
  * кодами 422/424, но пропускает другие ребра (Deno Deploy, Netlify Edge…).
@@ -74,6 +75,13 @@ async function handle(request) {
     let api = url.href.substring(self.length + 1);
     if (api === 'debuglog') {
       return new Response(JSON.stringify(LOG, null, 1), { headers: ACAO });
+    }
+    /* v16: короткая ссылка на плагин: https://lampa-bridge.netlify.app/p */
+    if (api === 'p' || api === 'p/' || api === 'plugin') {
+      return new Response(null, {
+        status: 302,
+        headers: Object.assign({ Location: PLUGIN_URL, 'Cache-Control': 'no-store' }, ACAO),
+      });
     }
     if (!api.startsWith('enc2/')) {
       return new Response('kinokino worker ok', { headers: ACAO });

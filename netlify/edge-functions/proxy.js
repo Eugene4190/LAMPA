@@ -50,6 +50,8 @@ const BRIDGES = [
   '', // ← сюда можно вписать адрес второго напарника: 'https://ИМЯ.netlify.app/'
 ].filter(Boolean);
 
+const PLUGIN_URL = 'https://cdn.jsdelivr.net/gh/Eugene4190/LAMPA@84112042db7fdd33085d2225c0ed69af66936953/online_mod.full.js';
+
 const worker = {
   async fetch(request) {
     try {
@@ -74,6 +76,16 @@ async function handle(request) {
     let api = url.href.substring(self.length + 1);
     if (api === 'debuglog') {
       return new Response(JSON.stringify(LOG, null, 1), { headers: ACAO });
+    }
+    /* v16: короткая ссылка на плагин: https://lampa-bridge.netlify.app/p
+     * 302 на прибитый к коммиту jsDelivr. В Lampa достаточно ввести короткий
+     * адрес — при каждом обновлении я просто перенаправляю /p на новый коммит,
+     * и тебе не надо менять ссылку в настройках. */
+    if (api === 'p' || api === 'p/' || api === 'plugin') {
+      return new Response(null, {
+        status: 302,
+        headers: Object.assign({ Location: PLUGIN_URL, 'Cache-Control': 'no-store' }, ACAO),
+      });
     }
     if (!api.startsWith('enc2/')) {
       return new Response('kinokino worker ok', { headers: ACAO });
