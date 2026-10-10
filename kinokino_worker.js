@@ -20,12 +20,14 @@
  * (плееру путь не мешает: нужен именно адрес .../debuglog без enc2).
  * v12: МОСТ-КОЛЬЦО: антибот источника банит эдж Cloudflare (422/424), поэтому
  *     воркеру нужен напарник на НЕ-cloudflare ребре (Deno Deploy был таким,
- *     пока его не приостановили: «Organization suspended / USAGE_EXCEEDED»).
- *     Теперь мостов может быть несколько (BRIDGES): каждое развёртывание
- *     этого файла страховало остальные — Deno и Netlify Edge страхуют друг
- *     друга, CF-воркер без напарника не работоспособен.
- * v12: честная диагностика: в теле 502 виден ИСХОДНЫЙ код upstream ДО моста
- *     (раньше мост перезаписывал его своим 503 и причина бана терялась).
+ *     пока его не приостановили). Мостов может быть несколько (BRIDGES):
+ *     каждое развёртывание этого файла страхует остальные.
+ * v12: честная диагностика: в теле 502 виден ИСХОДНЫЙ код upstream ДО моста.
+ * v13: DASH по-настоящему: mpd строит адреса сегментов сам (BaseURL + шаблон
+ *     $Number$). Воркер заворачивает BaseURL «папкой» (/seg/ с хвостовым
+ *     слэшем), шаблоны $… оставляет СНАРУЖИ обёртки, а всё, что плеер дописал
+ *     после /seg (путь сегмента, init, query), добавляет к расшифрованной
+ *     ссылке. Без этого KinoKino (DASH) через прокси не играл.
  *
  * ДЕПЛОЙ (бесплатно, без копипасты): Cloudflare dashboard → Workers & Pages →
  * Create → Import from GitHub → репозиторий LAMPA (Cloudflare увидит
@@ -40,12 +42,12 @@ const LOG = []; // «чёрный ящик»: последние запросы 
 
 /* v12: мост-кольцо. Антибот источника (interkh.com) банит эдж Cloudflare
  * кодами 422/424, но пропускает другие ребра (Deno Deploy, Netlify Edge…).
- * Перечисли здесь ВСЕ свои развёртывания этого файла, кроме cloudflare-ного:
- * каждое из них умеет тянуть upstream само и страхует остальные.
- * Пустые строки игнорируются; свой же адрес исключается автоматически. */
+ * Перечисли ВСЕ свои развёртывания этого файла, кроме cloudflare-ного:
+ * каждое умеет тянуть upstream само и страхует остальные.
+ * Пустые строки игнорируются; свой адрес исключается автоматически. */
 const BRIDGES = [
   'https://lampa.eugene4190.deno.net/',  // приостановлен (billing/usage) — оживёт, сам подхватится
-  '', // ← сюда впиши адрес Netlify Edge: 'https://ИМЯ.netlify.app/' (см. fix/INSTRUCTIONS.md)
+  '', // ← сюда можно вписать адрес второго напарника: 'https://ИМЯ.netlify.app/'
 ].filter(Boolean);
 
 export default {
@@ -151,13 +153,40 @@ async function handle(request) {
     };
     link = unwrap(link);
 
+    // v13: DASH-хвост. Плееры (webOS, dash.js) строят адреса сегментов сами:
+    // BaseURL + initialization/media из SegmentTemplate. Всё, что пришло
+    // после /seg (путь сегмента, init, query), дописываем к расшифрованной
+    // ссылке — иначе воркер отдавал бы «папку» вместо сегмента.
+    let suffix = '';
+    const iSeg = segAll.indexOf('/seg');
+    if (iSeg !== -1) suffix = segAll.substring(iSeg + 4);
+    if (suffix) {
+      try { suffix = decodeURIComponent(suffix); } catch (e) {}
+      if (suffix[0] !== '/') suffix = '/' + suffix;
+      if (link.endsWith('/') && suffix[0] === '/') suffix = suffix.substring(1);
+      link += suffix;
+    }
+
+    const DOLLAR = String.fromCharCode(36); // '$' без литерала (безопасно для heredoc/редактур)
     const UA = params['User-Agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
     const wrap = (u) => {
-      const clean = unwrap(u); // снимает и наши, и чужие/мёртвые обёртки
-      if (clean.indexOf(selfPrefix) === 0) return clean;
+      let clean = unwrap(u); // снимает и наши, и чужие/мёртвые обёртки
+      // v13: DASH-шаблоны ($Number$, $Time$…) оставляем СНАРУЖИ обёртки: плеер
+      // подставит номера сам, а воркер добавит хвост к расшифрованной ссылке
+      let tpl = '';
+      const d = clean.indexOf(DOLLAR);
+      if (d !== -1) { tpl = clean.substring(d); clean = clean.substring(0, d); }
+      const tplTail = (t) => (t ? (t[0] === '/' ? t : '/' + t) : '');
+      if (clean.indexOf(selfPrefix) === 0) {
+        return clean + (clean.endsWith('/') ? '' : '/seg') + tplTail(tpl);
+      }
       let m = 'param/User-Agent=' + encodeURIComponent(UA) + '/';
       if (params.Src) m += 'param/Src=' + encodeURIComponent(params.Src) + '/';
-      return self + '/enc2/' + encodeURIComponent(btoa(m + clean)) + '/seg';
+      // v13: BaseURL-«папки» (заканчиваются на /) заворачиваем с хвостовым
+      // слэшем после /seg — тогда относительные initialization/media из mpd
+      // разрешаются ВНУТРЬ нашей обёртки, а не мимо неё
+      const tail = clean.endsWith('/') ? '/seg/' : '/seg';
+      return self + '/enc2/' + encodeURIComponent(btoa(m + clean)) + tail + tplTail(tpl);
     };
     const upstream = async (u, ref) => {
       // v10: ретрай через секунду — эджи источника отвечают 410/503 точечно
@@ -203,15 +232,14 @@ async function handle(request) {
       });
     };
     // v8-мост: антибот источника банит эдж Cloudflare (422/424), но пропускает
-    // другие ребра (Deno, Netlify); из сетей РБ/БР наоборот виден Cloudflare,
-    // но не Deno. v12: мостов несколько — пробуем по очереди (кольцо страховки).
+    // другие ребра (Deno, Netlify). v12: мостов несколько — пробуем по очереди.
     const bridge = async (apiPath) => {
       let last = null;
       for (const b of BRIDGES) {
-        const base = b.endsWith('/') ? b : b + '/';
-        if (base === self + '/') continue; // себя не мостуем
+        const bbase = b.endsWith('/') ? b : b + '/';
+        if (bbase === self + '/') continue; // себя не мостуем
         try {
-          const r = await fetch(base + apiPath, {
+          const r = await fetch(bbase + apiPath, {
             headers: { 'User-Agent': UA, 'Accept': '*/*' },
           });
           if (r.status < 400) return r;
@@ -224,13 +252,12 @@ async function handle(request) {
 
     const serve = async (res, ofLink, bridged) => {
       const ct = res.headers.get('content-type') || 'application/octet-stream';
-      if (/mpegurl|mpd|text|json/i.test(ct)) {
+      if (/mpegurl|m3u8|mpd|dash|xml|text|json/i.test(ct)) { // v13: dash+xml раньше пролетал мимо
         let text = await res.text();
-        // v12: плейлист пришёл с моста — в нём ссылки на мост, переписываем на себя
         if (bridged) {
           for (const b of BRIDGES) {
-            const base = b.endsWith('/') ? b : b + '/';
-            text = text.split(base).join(self + '/');
+            const bbase = b.endsWith('/') ? b : b + '/';
+            text = text.split(bbase).join(self + '/');
           }
         }
         // v9 mono: нативные плееры (VLC, Mi Video, webOS) не умеют многоголосый
@@ -243,11 +270,13 @@ async function handle(request) {
         const base = ofLink.substring(0, ofLink.lastIndexOf('/') + 1);
         const abs = (u) => (u.indexOf('http') === 0 ? u : base + u);
         // абсолютные ссылки -> через воркер
-        text = text.replace(/https?:\/\/[^\s"',\\)]+/g, (u) => wrap(u));
-        // относительные строки сегментов (не комментарии) -> через воркер
-        text = text.replace(/^((?!#)[^\s:]+)$/gm, (u) => wrap(abs(u.trim())));
-        // относительные URI= (ключи, аудио-плейлисты) -> через воркер
-        text = text.replace(/URI="((?!http|data:)[^"]+)"/g, (m0, u) => 'URI="' + wrap(abs(u)) + '"');
+        text = text.replace(/https?:\/\/[^\s"',\\)<>]+/g, (u) => wrap(u));
+        // v13: строчные/URI-правки — только HLS; относительные initialization и
+        // media из mpd плеер разрешает сам против обёрнутого BaseURL (+ хвост v13)
+        if (/mpegurl|m3u8/i.test(ct + ofLink)) {
+          text = text.replace(/^((?!#)[^\s:]+)$/gm, (u) => wrap(abs(u.trim())));
+          text = text.replace(/URI="((?!http|data:)[^"]+)"/g, (m0, u) => 'URI="' + wrap(abs(u)) + '"');
+        }
         return new Response(text, { headers: Object.assign({ 'Content-Type': ct, 'Cache-Control': 'no-store' }, ACAO) });
       }
       const bh = { 'Content-Type': ct, 'Cache-Control': 'public, max-age=300', 'Accept-Ranges': 'bytes' };
@@ -264,7 +293,7 @@ async function handle(request) {
     // 1) обычный запрос
     let res = await upstream(link);
     let via = '';
-    const origStatus = res.status; // v12: запоминаем ИСХОДНЫЙ код до мостов (для диагностики)
+    const origStatus = res.status; // v12: ИСХОДНЫЙ код до мостов (для диагностики)
 
     // 1.5) антибот банит наш эдж -> уходим мостом через Deno
     if (res.status === 422 || res.status === 424) {
@@ -320,8 +349,6 @@ async function handle(request) {
     if (res.status >= 400) {
       let head = '';
       try { head = ((await res.clone().text()) || '').replace(/\s+/g, ' ').substring(0, 140); } catch (e) {}
-      // v12: честная диагностика: «upstream 422 -> 503 via bridge-last | …» —
-      // видно и бан антибота, и что мост мёртв (а не только последнее звено)
       const chain = origStatus + (via ? ' -> ' + res.status + ' via ' + via : '');
       return new Response('upstream ' + chain + ' | ' + head, { status: 502, headers: ACAO });
     }
