@@ -85,6 +85,7 @@ function createKinokino(component, _object, prefer_dash) {
     'Referer': 'https://api.nextembed.ws/'
   } : {};
   var filter_items = {};
+  var last_id = '';
   var choice = {
     season: 0,
     voice: 0
@@ -166,7 +167,7 @@ function createKinokino(component, _object, prefer_dash) {
   }
 
   /* ── шаг 2: качаем embed-ы по очереди, пока не найдётся makePlayer ── */
-  function fetchEmbeds(urls, i, onEmpty) {
+  function fetchEmbeds(urls, i, onEmpty, attempt) {
     if (!urls || i >= urls.length) {
       onEmpty();
       return;
@@ -175,16 +176,16 @@ function createKinokino(component, _object, prefer_dash) {
     network.clear();
     network.timeout(10000);
     network.native(component.proxyLink(urls[i], prox, prox_enc, 'enc2t'), function (str) {
-      if (str && str.indexOf('makePlayer(') !== -1) parse(str);else fetchEmbeds(urls, i + 1, onEmpty);
+      if (str && str.indexOf('makePlayer(') !== -1) parse(str, attempt);else fetchEmbeds(urls, i + 1, onEmpty, attempt);
     }, function () {
-      fetchEmbeds(urls, i + 1, onEmpty);
+      fetchEmbeds(urls, i + 1, onEmpty, attempt);
     }, false, {
       dataType: 'text',
       headers: play_headers
     });
   }
 
-  function searchBy(kinopoisk_id, onEmpty) {
+  function searchBy(kinopoisk_id, onEmpty, attempt) {
     apiSearch(kinopoisk_id, function (iframe) {
       var urls = [];
       if (iframe) urls.push(iframe);
@@ -195,12 +196,12 @@ function createKinokino(component, _object, prefer_dash) {
         urls.push(MIRRORS[m] + api);
       }
 
-      fetchEmbeds(urls, 0, onEmpty);
+      fetchEmbeds(urls, 0, onEmpty, attempt || 1);
     });
   }
 
   /* ── разбор embed-а: makePlayer({...}); ──────────────────────── */
-  function parse(str) {
+  function parse(str, attempt) {
     component.loading(false);
     str = (str || '').replace(/\n/g, '');
     var find = str.match(/makePlayer\(({.*?})\);/);
@@ -220,20 +221,90 @@ function createKinokino(component, _object, prefer_dash) {
         });
       }
 
-      var probe_url = '';
+      // CDN источника ротировает токены: часть ссылок периодически отдаёт 410.
+      // Проверяем цепочку мастер->вариант->сегмент и, если мертва, тихо
+      // перечитываем embed (свежие токены) до 3 раз, прежде чем показать список.
+      validateSegments(function (alive) {
+        if (alive || (attempt || 1) >= 3) {
+          var probe_url = '';
 
-      if (extract.source) {
-        probe_url = pickFile(extract.source);
-      } else if (extract.playlist && extract.playlist.seasons.length && extract.playlist.seasons[0].episodes && extract.playlist.seasons[0].episodes.length) {
-        probe_url = pickFile(extract.playlist.seasons[0].episodes[0]);
-      }
+          if (extract.source) {
+            probe_url = pickFile(extract.source);
+          } else if (extract.playlist && extract.playlist.seasons.length && extract.playlist.seasons[0].episodes && extract.playlist.seasons[0].episodes.length) {
+            probe_url = pickFile(extract.playlist.seasons[0].episodes[0]);
+          }
 
-      probeQuality(probe_url, function (h) {
-        detected_height = h;
-        filter();
-        append(filtred());
+          probeQuality(probe_url, function (h) {
+            detected_height = h;
+            filter();
+            append(filtred());
+          });
+        } else {
+          searchBy(last_id, function () {
+            filter();
+            append(filtred());
+          }, (attempt || 1) + 1);
+        }
       });
     } else component.emptyForQuery(select_title);
+  }
+
+  function statusOnce(url, cb) {
+    network.clear();
+    network.timeout(8000);
+    network.native(url, function (str) {
+      cb(str && str.length ? 200 : 0, str || '');
+    }, function (a) {
+      cb(a && a.status ? a.status : 0, '');
+    }, false, {
+      dataType: 'text',
+      headers: play_headers
+    });
+  }
+
+  function validateSegments(cb) {
+    var first = extract.source || (extract.playlist && extract.playlist.seasons[0] && extract.playlist.seasons[0].episodes[0]) || null;
+    var master_url = first ? pickFile(first) : '';
+
+    if (!master_url) {
+      cb(true);
+      return;
+    }
+
+    statusOnce(master_url, function (st, mtxt) {
+      if (st !== 200 || !mtxt) {
+        cb(false);
+        return;
+      }
+
+      var m = mtxt.match(/#EXT-X-STREAM-INF:[^\n]*\n(https?:\/\/[^\n]+)/);
+      var variant_url = m ? m[1] : master_url;
+      statusOnce(variant_url, function (st2, vtxt) {
+        if (st2 !== 200 || !vtxt) {
+          cb(false);
+          return;
+        }
+
+        var lines = vtxt.split('\n').filter(function (l) {
+          return l.trim() && l.charAt(0) !== '#';
+        });
+        var seg_url = lines[0] || '';
+
+        if (seg_url.indexOf('http') !== 0) {
+          var base = variant_url.substring(0, variant_url.lastIndexOf('/') + 1);
+          seg_url = base + seg_url;
+        }
+
+        if (!seg_url) {
+          cb(true);
+          return;
+        }
+
+        statusOnce(seg_url, function (st3) {
+          cb(st3 === 200);
+        });
+      });
+    });
   }
 
   /* ── фильтр сезонов ──────────────────────────────────────────── */
@@ -419,6 +490,7 @@ function createKinokino(component, _object, prefer_dash) {
   this.search = function (_object, kinopoisk_id) {
     object = _object;
     select_title = object.search || object.movie.title;
+    last_id = kinopoisk_id;
     searchBy(kinopoisk_id, function () {
       if (!object.clarification && object.movie.imdb_id && kinopoisk_id != object.movie.imdb_id) {
         searchBy(object.movie.imdb_id, function () {
