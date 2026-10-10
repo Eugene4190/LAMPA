@@ -135,6 +135,9 @@ function createKinokino(component, _object, prefer_dash) {
 
   function proxUrl(link, mono) {
     if (!link) return link;
+    // v16: воркер уже сам заворачивает абсолютные URL внутри JSON-ответов —
+    // не заворачиваем повторно
+    if (stream_prox && link.indexOf(stream_prox) === 0) return link;
     if (!stream_prox) {
       // без прокси mono всё равно полезен нативным плеерам: отдаём прямую
       // ссылку, а моно-плейлист попросить не у кого — оставим как есть
@@ -145,6 +148,130 @@ function createKinokino(component, _object, prefer_dash) {
 
   if (prox) {
     prox_enc += 'param/User-Agent=' + encodeURIComponent(user_agent) + '/';
+  }
+
+  /* ── v16: CDNVideoHub (VK Video CDN) — те самые 4K-копии, что играет сайт ──
+   * API открытое: plapi.cdnvideohub.com/api/v1/player/sv/
+   *   playlist?pub=12&aggr=kp&id=<kp>  -> список озвучек с vkId
+   *   video/<vkId>                     -> sources: progressive-MP4 на каждую
+   *   ступень (4K/2K/1440p/.../144p, звук вшит: AAC/AC3) + HLS-мастер.
+   * Токены VK привязаны к IP клиента (srcIp=... в URL), поэтому и API, и
+   * сегменты ходят ОДНИМ плечом через наш воркер: IP воркера и есть srcIp.
+   * Origin CDN здесь не проверяет (в отличие от копий Alloha).
+   * Зачем: сайт kinokino берёт 4K именно отсюда, а не из Collaps; теперь эти
+   * же копии лежат в том же балансере KinoKino отдельными пунктами по озвучкам. */
+  var VK_API = 'https://plapi.cdnvideohub.com/api/v1/player/sv/';
+
+  /* v16.1: VK-потоки ходят НАПРЯМУЮ, без воркера — и это не лень, а физика:
+   * токен VK привязан к IP клиента (srcIp=...), а медиазапросы с заголовком
+   * Origin CDN отклоняет (400). Поэтому: API вызываем с устройства (plapi
+   * зеркалит Origin в ACAO — CORS открыт), MP4 играем тегом video/нативным
+   * плеером без Origin (200, Accept-Ranges: bytes, Range 206). Через воркер
+   * это не повторить: у эджа другой IP, чем у токена. */
+  function vkWrap(url) {
+    return url || '';
+  }
+
+  function vkQualityMap(sources) {
+    var map = [];
+    var push = function (label, q, url) {
+      if (url) map.push({ label: label, quality: q, file: vkWrap(url) });
+    };
+    /* подписи 2k/4k у CDNVideoHub перепутаны местами (как и у автора плагина) */
+    push('4K', 2160, sources.mpeg2kUrl);
+    push('2K', 1440, sources.mpeg4kUrl);
+    push('1440p', 1440, sources.mpegQhdUrl);
+    push('1080p', 1080, sources.mpegFullHdUrl);
+    push('720p', 720, sources.mpegHighUrl);
+    push('480p', 480, sources.mpegMediumUrl);
+    push('360p', 360, sources.mpegLowUrl);
+    push('240p', 240, sources.mpegLowestUrl);
+    push('144p', 144, sources.mpegTinyUrl);
+    /* HLS-мастер VK не трогаем: hls.js ходит XHR-ом с Origin, а VK такие
+     * запросы отбивает (400). Лестницы MP4 хватает на все случаи. */
+    return map;
+  }
+
+  function vkPlaylist(onDone) {
+    if (!last_id || isNaN(+last_id)) {
+      onDone([]);
+      return;
+    }
+    var d = new Lampa.Reguest();
+    d.timeout(10000);
+    d.native(vkWrap(VK_API + 'playlist?pub=12&aggr=kp&id=' + last_id), function (json) {
+      var out = [];
+      if (json && json.items && json.items.forEach) {
+        json.items.forEach(function (it) {
+          if (it && it.vkId) out.push(it);
+        });
+      }
+      onDone(out);
+    }, function () {
+      onDone([]);
+    }, false, {
+      dataType: 'json'
+    });
+  }
+
+  function vkStream(data_id, onDone) {
+    var d = new Lampa.Reguest();
+    d.timeout(10000);
+    d.native(vkWrap(VK_API + 'video/' + data_id), function (json) {
+      onDone(json && json.sources ? vkQualityMap(json.sources) : []);
+    }, function () {
+      onDone([]);
+    }, false, {
+      dataType: 'json'
+    });
+  }
+
+  /* пункты VK-копий: одна озвучка = один пункт, внутри — меню качества до 4K */
+  function vkMovieItems(vk) {
+    var is_serial = extract.playlist && extract.playlist.seasons && extract.playlist.seasons.length;
+    if (!vk || !vk.length || is_serial) return []; // сериалы — следующим заходом
+    return vk.map(function (it) {
+      var voice = it.voiceStudio || it.voiceType || 'VK';
+      return {
+        title: voice,
+        quality: '144p ~ 4K',
+        info: ' / VK 4K / id: ' + it.vkId,
+        kind: 'vk',
+        data_id: '' + it.vkId,
+        subtitles: false,
+        audio_tracks: false
+      };
+    });
+  }
+
+  function vkPlay(element, options) {
+    component.loading(true);
+    vkStream(element.data_id, function (map) {
+      component.loading(false);
+      if (!map.length) {
+        Lampa.Noty.show('KinoKino: VK-поток не получен (токен или озвучка недоступны)');
+        return;
+      }
+      var quality = {};
+      map.forEach(function (m) { quality[m.label] = m.file; });
+      var first = {
+        url: component.getDefaultQuality(quality, map[0].file),
+        quality: component.renameQualityMap(quality),
+        timeline: element.timeline,
+        title: select_title + ' / ' + element.title,
+        subtitles: false
+      };
+      // MP4 со вшитым звуком играет кто угодно: на ТВ системным плеером,
+      // на телефоне/в браузере — встроенным (тег video, без Origin)
+      if (options && options.runas) Lampa.Player.runas(options.runas);
+      else if (Lampa.Player.runas) {
+        if (tv_native) Lampa.Player.runas(Lampa.Platform.is('tizen') ? 'tizen' : 'webos');
+        else if (no_mse) Lampa.Player.runas('');
+        else Lampa.Player.runas('lampa');
+      }
+      Lampa.Player.play(first);
+      Lampa.Player.playlist([first]);
+    });
   }
 
   // Заголовки для прямого (не через прокси) воспроизведения на Android.
@@ -447,7 +574,10 @@ function createKinokino(component, _object, prefer_dash) {
           var finalize = function (h) {
             detected_height = h;
             filter();
-            append(filtred());
+            // v16: один балансер = Collaps + VK 4K-копии сайта
+            vkPlaylist(function (vk) {
+              append(filtred().concat(vkMovieItems(vk)));
+            });
           };
 
           probeQuality(probe_url, function (h, prox_ok) {
@@ -661,6 +791,11 @@ function createKinokino(component, _object, prefer_dash) {
       if (viewed.indexOf(hash_file) !== -1) item.append('<div class="torrent-item__viewed">' + Lampa.Template.get('icon_star', {}, true) + '</div>');
       item.on('hover:enter', function (event, options) {
         if (object.movie.id) Lampa.Favorite.add('history', object.movie, 100);
+
+        if (element.kind === 'vk') {
+          vkPlay(element, options);
+          return;
+        }
 
         if (element.file) {
           var do_play = function (alt_on) {

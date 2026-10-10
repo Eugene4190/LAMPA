@@ -114,7 +114,7 @@ const LampaReal = {
   Params: { trigger: () => {}, select: () => {}, update: () => {}, toggle: () => {}, value: (k) => store[k], play: () => {}, get: (k) => store[k], set: (k, v) => { store[k] = v; } },
   Template: {
     add: (k, v) => { templates[k] = v; },
-    get: (k, el) => { if (k === 'online_mod' && el && el.file) captured.items.push(el); return chain(); },
+    get: (k, el) => { if (k === 'online_mod' && el && (el.file || el.kind === 'vk')) captured.items.push(el); return chain(); },
   },
   Component: { add: (name, fn) => { if (name === 'online_mod') captured.component = fn; } },
   Filter: function () {
@@ -238,6 +238,8 @@ async function runCard(movie, label, balanser) {
   ok('фильм: найден и есть ссылка', filmOk && !!filmItem.file, filmOk ? '' : 'пусто');
   ok('фильм: ссылка — HLS master.m3u8', /\.m3u8/.test(filmItem.file || ''), (filmItem.file || '').slice(0, 80));
   ok('фильм: несколько переводов (аудиодорожки)', (filmItem.audio_tracks || []).length >= 1, String((filmItem.audio_tracks || []).length));
+  ok('фильм: VK 4K-копии сайта добавлены в тот же балансер', captured.items.some((i) => i.kind === 'vk'),
+     'VK-пунктов: ' + captured.items.filter((i) => i.kind === 'vk').length);
 
   const serOk = await runCard(
     { id: 2, title: 'Холод', original_title: 'Холод', number_of_seasons: 1, kinopoisk_id: 7036356, imdb_id: '' },
