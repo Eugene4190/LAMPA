@@ -27,7 +27,7 @@ function depth(u) {
   while (u.indexOf(PREFIX) === 0 && d < 9) {
     d++;
     try {
-      u = atob(decodeURIComponent(u.substring(PREFIX.length).split('/')[0]));
+      let bb = u.substring(PREFIX.length).split('/')[0].replace(/-/g,'+').replace(/_/g,'/'); while (bb.length%4) bb+='='; u = atob(bb);
       while (u.indexOf('param/') === 0) { const p = u.indexOf('/', 6); u = p === -1 ? '' : u.substring(p + 1); }
     } catch (e) { break; }
   }

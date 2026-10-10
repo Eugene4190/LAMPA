@@ -30,6 +30,15 @@ const LOG = []; // «чёрный ящик»: последние запросы 
 
 export default {
   async fetch(request) {
+    try {
+      return await handle(request);
+    } catch (e) {
+      return new Response('internal: ' + (e && e.message || e), { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } });
+    }
+  },
+};
+
+async function handle(request) {
     const ACAO = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': '*',
@@ -47,7 +56,34 @@ export default {
       return new Response('kinokino worker ok', { headers: ACAO });
     }
 
-    let meta = atob(decodeURIComponent(api.substring(5).split('/')[0]));
+    // v7: плееры (VLC, Mi Video, WebView/hls.js) перед запросом могут пере- или
+    // докодировать %XX в ссылке (%2B -> %252B и т.п.) — раньше воркер падал с 500.
+    // Терпимо снимаем слои кодирования, понимаем base64url (-_) и стандартный
+    // base64 (+/), на мусоре отвечаем 400 вместо краха.
+    const segAll = api.substring(5);
+    const tryB64 = (x) => {
+      try {
+        let b = x.replace(/-/g, '+').replace(/_/g, '/');
+        while (b.length % 4) b += '=';
+        const c = atob(b);
+        return c && (c.indexOf('://') !== -1 || c.indexOf('param/') === 0) ? c : null;
+      } catch (e) { return null; }
+    };
+    const decodeMeta = (x) => {
+      let s = x;
+      for (let i = 0; i < 4; i++) {
+        const m = tryB64(s.indexOf('%') !== -1 ? decodeURIComponent(s) : s) ||
+                  (s.indexOf('%') !== -1 ? tryB64(s) : null);
+        if (m) return m;
+        try { s = decodeURIComponent(s); } catch (e) { break; }
+      }
+      return null;
+    };
+    const head = segAll.split('/')[0];
+    const meta = decodeMeta(head) ||
+                 (segAll.lastIndexOf('/') > 0 ? decodeMeta(segAll.substring(0, segAll.lastIndexOf('/'))) : null) ||
+                 decodeMeta(segAll);
+    if (!meta) return new Response('bad link', { status: 400, headers: ACAO });
     const params = {};
     let rest = meta;
     while (rest.indexOf('param/') === 0) {
@@ -185,5 +221,4 @@ export default {
       return new Response('upstream ' + res.status, { status: 502, headers: ACAO });
     }
     return serve(res, link);
-  },
-};
+  }

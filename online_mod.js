@@ -103,6 +103,29 @@ function createKinokino(component, _object, prefer_dash) {
     return e;
   }
 
+  // v7: свои ссылки на воркер кодируем base64url (алфавит без %, + и /):
+  // плееры (VLC, Mi Video, WebView/hls.js) перед запросом перекодируют %XX
+  // по-своему и ломали ссылку (воркер падал с 500 -> fragLoadError/0:00).
+  // В base64url перекодировать нечего — ссылка доезжает нетронутой.
+  function b64url(s) {
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function streamName(link) {
+    var posEnd = link.lastIndexOf('?');
+    var posStart = link.lastIndexOf('://');
+    if (posEnd === -1 || posEnd <= posStart) posEnd = link.length;
+    var name = link.substring(posStart + 3, posEnd);
+    posStart = name.lastIndexOf('/');
+    name = posStart !== -1 ? name.substring(posStart + 1) : '';
+    return name.replace(/\.(php|asp|aspx|jsp|jspx|cgi|pl|py|rb|env|ini|conf|config|htaccess|htpasswd|git|yml|yaml|sql)$/, '.txt') || 'seg';
+  }
+
+  function proxUrl(link) {
+    if (!link || !stream_prox) return link;
+    return stream_prox + 'enc2/' + b64url(streamEnc() + link) + '/' + streamName(link);
+  }
+
   if (prox) {
     prox_enc += 'param/User-Agent=' + encodeURIComponent(user_agent) + '/';
   }
@@ -157,7 +180,7 @@ function createKinokino(component, _object, prefer_dash) {
 
     network.clear();
     network.timeout(8000);
-    network.native(component.proxyLink(url, stream_prox, streamEnc(), 'enc2'), function (str) {
+    network.native(proxUrl(url), function (str) {
       var h = 0;
       var re = dashActive() ? /height="(\d+)"/g : /RESOLUTION=\d+x(\d+)/g;
       var m;
@@ -426,12 +449,12 @@ function createKinokino(component, _object, prefer_dash) {
               info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
               season: season.season,
               episode: parseInt(episode.episode),
-              file: component.proxyLink(file, stream_prox, streamEnc(), 'enc2'),
+              file: proxUrl(file),
               subtitles: episode.cc ? episode.cc.map(function (c) {
                 var url = fixUrl(c.url || '');
                 return {
                   label: c.name,
-                  url: component.processSubs(component.proxyLink(url, stream_prox, streamEnc(), 'enc2'))
+                  url: component.processSubs(proxUrl(url))
                 };
               }) : false,
               audio_tracks: tracks.length ? tracks : false
@@ -451,12 +474,12 @@ function createKinokino(component, _object, prefer_dash) {
         title: extract.title || select_title,
         quality: qualityLabel(fallback),
         info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
-        file: component.proxyLink(file, stream_prox, streamEnc(), 'enc2'),
+        file: proxUrl(file),
         subtitles: extract.source.cc ? extract.source.cc.map(function (c) {
           var url = fixUrl(c.url || '');
           return {
             label: c.name,
-            url: component.processSubs(component.proxyLink(url, stream_prox, streamEnc(), 'enc2'))
+            url: component.processSubs(proxUrl(url))
           };
         }) : false,
         audio_tracks: tracks.length ? tracks : false
