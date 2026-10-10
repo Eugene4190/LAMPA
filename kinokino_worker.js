@@ -11,6 +11,9 @@
  * v3: «распутывание» матрёшки — если CDN-кэш отдаёт плейлист со ссылками уже
  * на воркер (двойная обёртка -> fragLoadError у плеера), воркер спускается
  * к исходной ссылке и больше не оборачивает собственные ссылки.
+ * v5: обрывает петлю наращивания слоёв: слои снимаются ДО запроса, редиректы
+ * ведутся вручную со снятием слоёв с Location; regex относительных строк не
+ * трогает абсолютные URL.
  * v4: распутывает обёртки ЛЮБОГО воркера (включая удалённые — кэш CDN умеет
  * отдавать ссылки на мёртвые адреса, это 404 -> fragLoadError); самолечение
  * ссылок при ЛЮБОЙ ошибке upstream; журнал последних запросов: GET /debuglog
@@ -75,7 +78,7 @@ export default {
       } catch (e) { return u; }
     };
     const unwrap = (u) => {
-      for (let g = 0; g < 8 && ANY_ENC.test(u); g++) {
+      for (let g = 0; g < 24 && ANY_ENC.test(u); g++) {
         const inner = unwrapOne(u);
         if (inner === u) break;
         u = inner;
@@ -93,9 +96,28 @@ export default {
       return self + '/enc2/' + encodeURIComponent(btoa(m + clean)) + '/seg';
     };
     const upstream = async (u, ref) => {
-      const t = new URL(u);
-      return fetch(u, {
-        headers: { 'User-Agent': UA, 'Referer': ref || (t.origin + '/'), 'Accept': '*/*' },
+      // v5: CDN-эджи умеют редиректить/кешировать обёрнутые ответы — получается
+      // петля наращивания слоёв. Поэтому: сняли все слои ДО запроса и редиректы
+      // ведём руками, снимая слои с каждого Location.
+      let cur = unwrap(u);
+      for (let hop = 0; hop < 6; hop++) {
+        const t = new URL(cur);
+        const r = await fetch(cur, {
+          headers: { 'User-Agent': UA, 'Referer': ref || (t.origin + '/'), 'Accept': '*/*' },
+          redirect: 'manual',
+        });
+        if (r.status >= 300 && r.status < 400) {
+          const loc = r.headers.get('location');
+          try { if (r.body && r.body.cancel) r.body.cancel(); } catch (e) {}
+          if (!loc) return r;
+          cur = unwrap(new URL(loc, cur).href);
+          continue;
+        }
+        return r;
+      }
+      const t2 = new URL(cur);
+      return fetch(cur, {
+        headers: { 'User-Agent': UA, 'Referer': ref || (t2.origin + '/'), 'Accept': '*/*' },
         redirect: 'follow',
       });
     };
@@ -108,7 +130,7 @@ export default {
         // абсолютные ссылки -> через воркер
         text = text.replace(/https?:\/\/[^\s"',\\)]+/g, (u) => wrap(u));
         // относительные строки сегментов (не комментарии) -> через воркер
-        text = text.replace(/^((?!#)[^\s:][^\s]*)$/gm, (u) => wrap(abs(u.trim())));
+        text = text.replace(/^((?!#)[^\s:]+)$/gm, (u) => wrap(abs(u.trim())));
         // относительные URI= (ключи, аудио-плейлисты) -> через воркер
         text = text.replace(/URI="((?!http|data:)[^"]+)"/g, (m0, u) => 'URI="' + wrap(abs(u)) + '"');
         return new Response(text, { headers: Object.assign({ 'Content-Type': ct, 'Cache-Control': 'no-store' }, ACAO) });
