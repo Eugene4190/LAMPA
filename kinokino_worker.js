@@ -58,6 +58,8 @@ async function handle(request) {
       return new Response('kinokino worker ok', { headers: ACAO });
     }
 
+    // v8: мост Cloudflare->Deno (антибот банит эдж CF кодами 422/424, а сети
+    //     РБ/БР не видят deno.net; мост соединяет оба плеча).
     // v7: плееры (VLC, Mi Video, WebView/hls.js) перед запросом могут пере- или
     // докодировать %XX в ссылке (%2B -> %252B и т.п.) — раньше воркер падал с 500.
     // Терпимо снимаем слои кодирования, понимаем base64url (-_) и стандартный
@@ -159,10 +161,20 @@ async function handle(request) {
         redirect: 'follow',
       });
     };
-    const serve = async (res, ofLink) => {
+    // v8-мост: антибот источника банит эдж Cloudflare (422/424), но пропускает
+    // Deno; из сетей РБ/БР наоборот виден Cloudflare, но не Deno. При бане эджа
+    // прозрачно пропускаем запрос через запасной Deno-воркер и переписываем
+    // его хост в плейлистах на себя.
+    const DENO = 'https://lampa.eugene4190.deno.net/';
+    const bridge = async (apiPath) => fetch(DENO + apiPath, {
+      headers: { 'User-Agent': UA, 'Accept': '*/*' },
+    });
+
+    const serve = async (res, ofLink, bridged) => {
       const ct = res.headers.get('content-type') || 'application/octet-stream';
       if (/mpegurl|mpd|text|json/i.test(ct)) {
         let text = await res.text();
+        if (bridged) text = text.split(DENO).join(self + '/');
         const base = ofLink.substring(0, ofLink.lastIndexOf('/') + 1);
         const abs = (u) => (u.indexOf('http') === 0 ? u : base + u);
         // абсолютные ссылки -> через воркер
@@ -181,6 +193,12 @@ async function handle(request) {
 
     // 1) обычный запрос
     let res = await upstream(link);
+    let via = '';
+
+    // 1.5) антибот банит наш эдж -> уходим мостом через Deno
+    if (res.status === 422 || res.status === 424) {
+      try { res = await bridge(api); via = 'bridge'; } catch (e) {}
+    }
 
     // 2) «самолечение»: любая ошибка (410/403/404/423/5xx) -> свежий embed ->
     //    свежие токены для того же сегмента
@@ -211,7 +229,13 @@ async function handle(request) {
       } catch (e) { /* остаёмся на исходном ответе */ }
     }
 
+    // 2.5) всё ещё ошибка — последний шанс: мост
+    if (res.status >= 400) {
+      try { res = await bridge(api); via = via || 'bridge-last'; } catch (e) {}
+    }
+
     LOG.push({
+      v: via,
       t: new Date().toISOString().substring(11, 19),
       u: link.substring(0, 70),
       s: res.status,
@@ -222,5 +246,5 @@ async function handle(request) {
     if (res.status >= 400) {
       return new Response('upstream ' + res.status, { status: 502, headers: ACAO });
     }
-    return serve(res, link);
+    return serve(res, link, via !== '');
   }
