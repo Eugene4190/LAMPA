@@ -556,6 +556,65 @@ function createKinokino(component, _object, prefer_dash) {
           }
 
           if (playlist.length > 1) first.playlist = playlist;
+
+          // v10-диагностика: прямо на устройстве проверяем цепочку
+          // мастер -> вариант -> первый сегмент ТОЙ же ссылкой, что уйдёт в
+          // плеер, и показываем код в уведомлении: DIAG [W воркер|D напрямую]
+          // [M mono|- мульти] ok/master/vari/seg + статус или килобайты
+          (function () {
+            try {
+              var mark = (stream_prox ? 'W' : 'D') + (stream_prox && use_mono ? 'M' : '-');
+              var pick = function (txt) {
+                var ls = (txt || '').split('\n');
+                for (var i = 0; i < ls.length; i++) {
+                  var t = ls[i].trim();
+                  if (t && t.charAt(0) !== '#') return t;
+                }
+                return '';
+              };
+              var d1 = new Lampa.Reguest();
+              d1.timeout(12000);
+              d1.native(first.url, function (mtxt) {
+                var vurl = pick(mtxt);
+                if (vurl.indexOf('http') !== 0) vurl = '';
+                if (!vurl) {
+                  Lampa.Noty.show('DIAG ' + mark + ' master?');
+                  return;
+                }
+                var d2 = new Lampa.Reguest();
+                d2.timeout(12000);
+                d2.native(vurl, function (vtxt) {
+                  var surl = pick(vtxt);
+                  if (surl && surl.indexOf('http') !== 0) surl = vurl.substring(0, vurl.lastIndexOf('/') + 1) + surl;
+                  if (!surl) {
+                    Lampa.Noty.show('DIAG ' + mark + ' vari?');
+                    return;
+                  }
+                  var d3 = new Lampa.Reguest();
+                  d3.timeout(15000);
+                  d3.native(surl, function (s) {
+                    Lampa.Noty.show('DIAG ' + mark + ' ok ' + (((s || '').length / 1024) | 0) + 'kb');
+                  }, function (e3) {
+                    Lampa.Noty.show('DIAG ' + mark + ' seg ' + (e3 && e3.status || 0));
+                  }, false, {
+                    dataType: 'text',
+                    headers: play_headers
+                  });
+                }, function (e2) {
+                  Lampa.Noty.show('DIAG ' + mark + ' vari ' + (e2 && e2.status || 0));
+                }, false, {
+                  dataType: 'text',
+                  headers: play_headers
+                });
+              }, function (e1) {
+                Lampa.Noty.show('DIAG ' + mark + ' master ' + (e1 && e1.status || 0));
+              }, false, {
+                dataType: 'text',
+                headers: play_headers
+              });
+            } catch (e) {}
+          })();
+
           // Выбор плеера:
           //  - пользователь сам выбрал в контекстном меню — уважаем (options.runas);
           //  - прописан свой прокси-воркер — на телефоне/в браузере играем встроенным

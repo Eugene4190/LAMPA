@@ -58,6 +58,7 @@ async function handle(request) {
       return new Response('kinokino worker ok', { headers: ACAO });
     }
 
+    // v10: ретрай upstream + heal перебирает все варианты/кандидаты сегмента.
     // v9: mono-режим (param/mono=1) — одно потоковое HLS с вшитой дорожкой
     //     для нативных плееров, не умеющих многоголосый HLS Collapsа.
     // v8: мост Cloudflare->Deno (антибот банит эдж CF кодами 422/424, а сети
@@ -138,9 +139,23 @@ async function handle(request) {
       return self + '/enc2/' + encodeURIComponent(btoa(m + clean)) + '/seg';
     };
     const upstream = async (u, ref) => {
-      // v5: CDN-эджи умеют редиректить/кешировать обёрнутые ответы — получается
-      // петля наращивания слоёв. Поэтому: сняли все слои ДО запроса и редиректы
-      // ведём руками, снимая слои с каждого Location.
+      // v10: ретрай через секунду — эджи источника отвечают 410/503 точечно
+      let r0;
+      try { r0 = await upstreamOnce(u, ref); } catch (e) { r0 = null; }
+      if (r0 && r0.status < 400) return r0;
+      await new Promise((r) => setTimeout(r, 1200));
+      try {
+        const r1 = await upstreamOnce(u, ref);
+        if (!r0) return r1;
+        if (r1.status < 400) return r1;
+        return r0;
+      } catch (e) { return r0 || new Response('upstream 0', { status: 502 }); }
+    };
+
+    // v5: CDN-эджи умеют редиректить/кешировать обёрнутые ответы — получается
+    // петля наращивания слоёв. Поэтому: сняли все слои ДО запроса и редиректы
+    // ведём руками, снимая слои с каждого Location.
+    const upstreamOnce = async (u, ref) => {
       let cur = unwrap(u);
       for (let hop = 0; hop < 6; hop++) {
         const t = new URL(cur);
@@ -220,17 +235,19 @@ async function handle(request) {
         if (hls) {
           const mr = await upstream(hls[1]);
           const mtxt = await mr.text();
-          const vm = mtxt.match(/#EXT-X-STREAM-INF:[^\n]*\n(https?:\/\/[^\n]+)/);
-          if (vm) {
-            const vr = await upstream(vm[1]);
+          const vms = mtxt.match(/#EXT-X-STREAM-INF:[^\n]*\n(https?:\/\/[^\n]+)/g) || [];
+          const want = '/' + link.split('/').slice(-2).join('/').split('?')[0];
+          for (let vi = 0; vi < vms.length && res.status >= 400; vi++) {
+            const vurl = vms[vi].split('\n')[1];
+            const vr = await upstream(vurl);
+            if (vr.status >= 400) continue;
             const vtxt = await vr.text();
-            const want = '/' + link.split('/').slice(-2).join('/').split('?')[0];
             const lines = vtxt.split('\n').filter((l) => l.trim() && l[0] !== '#');
             for (const l of lines) {
-              const cand = l.indexOf('http') === 0 ? l : vm[1].substring(0, vm[1].lastIndexOf('/') + 1) + l;
+              const cand = l.indexOf('http') === 0 ? l : vurl.substring(0, vurl.lastIndexOf('/') + 1) + l;
               if (cand.split('?')[0].endsWith(want)) {
                 res = await upstream(cand);
-                break;
+                if (res.status < 400) break;
               }
             }
           }
