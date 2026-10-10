@@ -4,7 +4,7 @@
     'use strict';
 
     /* ================================================================
-     *  МОИ ПРАВКИ — собрано build.js 2026-10-10
+     *  МОИ ПРАВКИ — собрано build.js 2026-10-11 (v15)
      *  версия автора: 20.09.2026 | лишние источники вырезаны
      *  Блок можно править руками прямо здесь, он в самом верху файла.
      * ================================================================ */
@@ -48,11 +48,14 @@
  *          как угодно, «...deno.net» и «...deno.net/» равнозначны);
  *        - все потоки идут через воркер (обходит 423 по Origin lampa.mx,
  *          503 на UA телевизоров, сам оживляет умершие от ротации ссылки);
- *        - на телефоне/в браузере при живом воркере играем встроенным плеером
- *          Lampa (hls.js): только он умеет многоголосый HLS и дорожки;
+ *        - на телефоне/в браузере/ПК при живом воркере играем встроенным
+ *          плеером Lampa: hls.js для m3u8 и dash.js для mpd — только они
+ *          умеют многоголосый поток Collapsа (звук + переключение переводов);
  *        - если воркер не отвечает плейлистом — тихий откат на прямые ссылки;
- *        - DASH-балансер на Android с воркером отдаёт HLS (встроенный плеер
- *          не умеет mpd, а системные плееры — многоголосый поток).
+ *        - DASH-балансер на телефоне отдаёт честный mpd (1080p+, VP9+Opus),
+ *          а не 720p HLS: встроенный плеер Lampa поднимает dash.js (MSE).
+ *          На webOS/Tizen mpd уходит системному плееру, а при «только Opus»
+ *          в mpd — откат на HLS встроенным плеером (иначе видео без звука).
  *
  * Поиск только по ID КиноПоиска/IMDB (по названию API сайта не умеет) —
  * поэтому в CONFIG.EXTRA_SOURCES стоит search:false, kp:true, imdb:true.
@@ -71,6 +74,7 @@ function createKinokino(component, _object, prefer_dash) {
   var object = _object;
   var select_title = '';
   var detected_height = 0;
+  var detected_bitrate = 0; // v15: максимум из mpd, кбит/с (для старта dash.js)
   var prefer_http = Lampa.Storage.field('online_mod_prefer_http') === true;
 
   var API = 'https://fbphdplay.top/api/players';
@@ -97,9 +101,32 @@ function createKinokino(component, _object, prefer_dash) {
 
   var last_embed = '';
 
-  // v9: нативные плееры (Android, webOS) не умеют многоголосый HLS Коллапса —
-  // для них просим у воркера mono-плейлист (дорожка по умолчанию вшита в видео)
-  var use_mono = Lampa.Platform.is('android') || Lampa.Platform.is('webos') || Lampa.Platform.is('tizen');
+  /* ── v15: КТО играет поток (от этого зависят и звук, и качество) ──────────
+   *
+   * Измерено на «Оппенгеймере» (kp 4664634), Collaps:
+   *   HLS  = 1280x720/640x360, видеосегменты БЕЗ звука (в PMT только H.264
+   *          0x1b + ID3 0x15 + приватный 0xd6), звук — 9 отдельных
+   *          аудиодорожек AAC в #EXT-X-MEDIA;
+   *   DASH = 1920x1080/720/486, VP9 (поле dash) или AV1 (поле dasha) + Opus,
+   *          9 дорожек (аудио в DASH у Collaps всегда Opus).
+   *
+   * Вывод: старый mono-режим («выкинуть #EXT-X-MEDIA, дорожка вшита в видео»)
+   * давал КАРТИНКУ БЕЗ ЗВУКА — вшивать там нечего. Именно это и было на
+   * телефоне. Многоголосый поток умеют только hls.js и dash.js, а они есть во
+   * встроенном плеере Lampa на любой современной платформе (vender/hls/hls.js,
+   * vender/dash/dash.js; в Player.url() на .mpd поднимается dashjs).
+   * Поэтому играем так:
+   *   телефон/браузер/ПК → встроенный плеер Lampa:
+   *        KinoKino       = HLS 720p, AAC, переводы переключаются;
+   *        KinoKino(DASH) = mpd 1080p+ (VP9+Opus) — то же, что показывает сайт;
+   *   webOS/Tizen         → DASH системным плеером (если аудио не только Opus),
+   *                         HLS-откат — встроенным (системный многоголосый не тянет);
+   *   orsay / нет воркера  → как раньше (системный/внешний плеер).
+   * mono больше не запрашиваем: воркер v15 в этом режиме оставляет дорожку по
+   * умолчанию, а не вырезает звук целиком (страховка для старых сборок). */
+  var tv_native = Lampa.Platform.is('webos') || Lampa.Platform.is('tizen');
+  var no_mse = Lampa.Platform.is('orsay');
+  var use_mono = false;
 
   function streamEnc(mono) {
     var e = stream_prox ? 'param/User-Agent=' + encodeURIComponent(DESKTOP_UA) + '/' : '';
@@ -169,16 +196,21 @@ function createKinokino(component, _object, prefer_dash) {
     return component.fixLinkProtocol(url, prefer_http, true);
   }
 
-  // DASH не играется встроенным плеером Lampa (hls.js умеет только HLS),
-  // а на Android с включённым прокси мы форсируем именно встроенный —
-  // поэтому там DASH-балансер честно отдаёт HLS-поток
+  /* v15: mpd теперь есть кому играть и на телефоне — встроенный плеер Lampa
+   * поднимает dash.js (MSE: VP9+Opus), поэтому DASH-балансер на Android больше
+   * не уходит в 720p HLS, а честно отдаёт mpd (1080p+, где есть — 4K).
+   * Откат на HLS остаётся только там, где mpd физически некому играть:
+   * без воркера (прямые ссылки в браузере режут CORS/423) и на orsay (нет MSE). */
   function dashActive() {
-    return prefer_dash && !(stream_prox && Lampa.Platform.is('android'));
+    if (!prefer_dash || no_mse) return false;
+    return !!stream_prox || tv_native;
   }
 
   function pickFile(src) {
     if (!src) return '';
-    return (dashActive() && (src.dasha || src.dash)) || src.hls || '';
+    // v15: сначала dash (VP9) — его декодируют и телефоны, и ТВ; dasha (AV1)
+    // на большинстве устройств считается программно и тормозит/греет батарею
+    return (dashActive() && (src.dash || src.dasha)) || src.hls || '';
   }
 
   /* ── честная метка качества: смотрим реальный мастер-плейлист ── */
@@ -201,6 +233,18 @@ function createKinokino(component, _object, prefer_dash) {
         if (v > h) h = v;
       }
 
+      // v15: заодно запоминаем максимальный битрейт потока (кбит/с) — он нужен,
+      // чтобы dash.js во встроенном плеере стартовал не с 486p (см. seedDashBitrate)
+      if (dashActive()) {
+        var rb = /bandwidth="(\d+)"/g;
+        var b;
+        detected_bitrate = 0;
+        while ((b = rb.exec(str))) {
+          var kb = Math.round(parseInt(b[1]) / 1000);
+          if (kb > detected_bitrate) detected_bitrate = kb;
+        }
+      }
+
       // ok = ответ вообще похож на плейлист (если через прокси приехала чушь —
       // воркер мёртв/не тот, и прокси надо сбросить до прямых ссылок)
       var ok = !stream_prox || str.indexOf('#EXTM3U') !== -1 || str.indexOf('<MPD') !== -1 || str.indexOf('MPD') !== -1;
@@ -213,9 +257,66 @@ function createKinokino(component, _object, prefer_dash) {
     });
   }
 
+  /* ── v14: какое аудио лежит в DASH (LG webOS не декодирует Opus → видео без звука) ── */
+  function pickHls(src) {
+    if (!src) return '';
+    return src.hls || '';
+  }
+
+  function probeDashAudio(url, onDone) {
+    if (!url) {
+      onDone('', 0);
+      return;
+    }
+    var d = new Lampa.Reguest();
+    d.timeout(8000);
+    d.native(proxUrl(url, false), function (str) {
+      str = str || '';
+      var codecs = [];
+      var re = /<AdaptationSet[^>]*contentType="audio"[^>]*>[\s\S]{0,400}?codecs="([^"]+)"/g;
+      var m;
+      while ((m = re.exec(str))) if (codecs.indexOf(m[1]) === -1) codecs.push(m[1]);
+      onDone(codecs.join(','), 0);
+    }, function () {
+      onDone('', 0);
+    }, false, {
+      dataType: 'text',
+      headers: play_headers
+    });
+  }
+
   function qualityLabel(fallback) {
     if (detected_height) return detected_height + 'p';
     return '360p ~ ' + fallback;
+  }
+
+  /* ── v15: старт dash.js с нормального качества ────────────────────────────
+   * Встроенный плеер Lampa поднимает dash.js и сразу выключает ему ABR
+   * (autoSwitchBitrate = false), а стартовое качество dash.js берёт из
+   * localStorage['dashjs_video_bitrate'] (свежесть — 6 минут), иначе из
+   * дефолта 1000 кбит/с. У Collaps лестница такая: 486p ≈ 2.6 Мбит/с,
+   * 720p ≈ 6.4, 1080p ≈ 12.3 — то есть с дефолтом телефон всегда начинал бы
+   * с 486p и (при выключенном ABR) так бы и остался.
+   * Поэтому перед стартом mpd кладём туда максимум из этого же mpd, НО только
+   * если пользователь не выбирал качество сам в последние 5 минут — его выбор
+   * всегда важнее нашего дефолта. */
+  function seedDashBitrate(kbps) {
+    try {
+      if (typeof localStorage === 'undefined' || !localStorage || !kbps) return;
+      var key = 'dashjs_video_bitrate';
+      var raw = localStorage.getItem(key);
+      var fresh = false;
+
+      if (raw) {
+        var saved = JSON.parse(raw);
+        fresh = saved && !isNaN(parseFloat(saved.bitrate)) && Date.now() - parseInt(saved.timestamp, 10) < 300000;
+      }
+
+      if (!fresh) localStorage.setItem(key, JSON.stringify({
+        bitrate: kbps,
+        timestamp: Date.now()
+      }));
+    } catch (e) {}
   }
 
   /* ── шаг 1: API сайта (ищем iframe плеера Collaps) ───────────── */
@@ -453,6 +554,7 @@ function createKinokino(component, _object, prefer_dash) {
               };
             });
             var file = fixUrl(pickFile(episode), true);
+            var alt = proxUrl(fixUrl(pickHls(episode), true), use_mono);
             filtred.push({
               title: episode.title,
               quality: qualityLabel(fallback),
@@ -460,6 +562,7 @@ function createKinokino(component, _object, prefer_dash) {
               season: season.season,
               episode: parseInt(episode.episode),
               file: proxUrl(file, use_mono),
+              alt_file: alt,
               subtitles: episode.cc ? episode.cc.map(function (c) {
                 var url = fixUrl(c.url || '');
                 return {
@@ -480,11 +583,13 @@ function createKinokino(component, _object, prefer_dash) {
         };
       });
       var file = fixUrl(pickFile(extract.source), true);
+      var alt = proxUrl(fixUrl(pickHls(extract.source), true), use_mono);
       filtred.push({
         title: extract.title || select_title,
         quality: qualityLabel(fallback),
         info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
         file: proxUrl(file, use_mono),
+        alt_file: alt,
         subtitles: extract.source.cc ? extract.source.cc.map(function (c) {
           var url = fixUrl(c.url || '');
           return {
@@ -520,9 +625,16 @@ function createKinokino(component, _object, prefer_dash) {
         if (object.movie.id) Lampa.Favorite.add('history', object.movie, 100);
 
         if (element.file) {
+          var do_play = function (alt_on) {
           var playlist = [];
+          var play_file = function (el) { return alt_on && el.alt_file ? el.alt_file : el.file; };
+          // v15: что именно сейчас уйдёт в плеер — mpd (DASH) или m3u8 (HLS),
+          // и кто будет играть: системный плеер ТВ (только mpd) или встроенный
+          var url_now = play_file(element) || '';
+          var mpd_now = /\.mpd/i.test(url_now);
+          var native_dash = mpd_now && tv_native && !no_mse;
           var first = {
-            url: component.getDefaultQuality(null, element.file),
+            url: component.getDefaultQuality(null, play_file(element)),
             subtitles: element.subtitles,
             translate: {
               tracks: element.audio_tracks
@@ -539,7 +651,7 @@ function createKinokino(component, _object, prefer_dash) {
           if (element.season) {
             items.forEach(function (elem) {
               playlist.push({
-                url: component.getDefaultQuality(null, elem.file),
+                url: component.getDefaultQuality(null, play_file(elem)),
                 subtitles: elem.subtitles,
                 translate: {
                   tracks: elem.audio_tracks
@@ -559,11 +671,12 @@ function createKinokino(component, _object, prefer_dash) {
 
           // v10-диагностика: прямо на устройстве проверяем цепочку
           // мастер -> вариант -> первый сегмент ТОЙ же ссылкой, что уйдёт в
-          // плеер, и показываем код в уведомлении: DIAG [W воркер|D напрямую]
-          // [M mono|- мульти] ok/master/vari/seg + статус или килобайты
+          // плеер, и показываем код в уведомлении:
+          // DIAG [W воркер|D напрямую][P mpd|H m3u8][N системный плеер|I встроенный]
+          //      ok/master/vari/seg + статус или килобайты
           (function () {
             try {
-              var mark = (stream_prox ? 'W' : 'D') + (stream_prox && use_mono ? 'M' : '-');
+              var mark = (stream_prox ? 'W' : 'D') + (mpd_now ? 'P' : 'H') + (native_dash ? 'N' : 'I');
               var pick = function (txt) {
                 var ls = (txt || '').split('\n');
                 for (var i = 0; i < ls.length; i++) {
@@ -615,26 +728,45 @@ function createKinokino(component, _object, prefer_dash) {
             } catch (e) {}
           })();
 
-          // Выбор плеера:
+          // Выбор плеера (v15):
           //  - пользователь сам выбрал в контекстном меню — уважаем (options.runas);
-          //  - прописан свой прокси-воркер — на телефоне/в браузере играем встроенным
-          //    плеером Lampa (hls.js): воркер отдаёт CORS-заголовки, значит блокировка
-          //    Origin lampa.mx (423) больше не мешает, а встроенный плеер — единственный,
-          //    кто умеет многоголосый HLS (Mi Video/VLC-интенты на нём спотыкаются);
-          //  - на webOS/Tizen оставляем системный плеер (там встроенный слабый,
-          //    а воркер и так снимает блокировку по UA);
-          //  - иначе — как настроено в Lampa (по умолчанию системный).
+          //  - mpd на webOS/Tizen — системный плеер (там hardware-декод VP9/HEVC,
+          //    встроенный браузер ТВ слабее);
+          //  - всё остальное — встроенный плеер Lampa: только он (hls.js/dash.js)
+          //    умеет многоголосый поток Collapsа, то есть ЗВУК + переключение
+          //    переводов; на телефоне он же поднимает dash.js и играет mpd
+          //    (1080p+, VP9+Opus) вместо 720p HLS;
+          //  - без воркера на телефоне прямые ссылки встроенным не достать
+          //    (CORS/423 Origin lampa.mx) — там по-старому системный плеер;
+          //  - orsay (старые Samsung, без MSE) — как настроено в Lampa.
           if (options && options.runas) Lampa.Player.runas(options.runas);
           else if (Lampa.Player.runas) {
-            // v9: многоголосый поток умеет только десктопный hls.js; на телефоне и
-            // ТВ играем нативными/внешними плеерами mono-поток
-            if (Lampa.Platform.is('android')) Lampa.Player.runas('android');
-            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas('webos');
-            else if (stream_prox && Lampa.Platform.is('tizen')) Lampa.Player.runas('tizen');
-            else Lampa.Player.runas('');
+            if (native_dash) Lampa.Player.runas(Lampa.Platform.is('tizen') ? 'tizen' : 'webos');
+            else if (!stream_prox && Lampa.Platform.is('android')) Lampa.Player.runas('android');
+            else if (no_mse) Lampa.Player.runas('');
+            else Lampa.Player.runas('lampa');
           }
+          // v15: mpd во встроенном плеере — заранее кладём dash.js стартовый
+          // битрейт, иначе он начнёт с 486p и (ABR выключен) так и останется
+          if (mpd_now && !native_dash) seedDashBitrate(detected_bitrate || 20000);
+
           Lampa.Player.play(first);
           Lampa.Player.playlist(playlist);
+          };
+          // v14: на webOS/Tizen перед стартом DASH смотрим аудио-кодеки mpd:
+          // только Opus → системный плеер LG озвучить не сможет → играем HLS
+          // (звук есть, честно до 720p) и объясняем это уведомлением
+          if (prefer_dash && dashActive() && element.alt_file && tv_native) {
+            probeDashAudio(element.file, function (codecs) {
+              var has_bad = codecs && codecs.split(',').some(function (c) { return c.indexOf('opus') !== -1; });
+              var has_good = codecs && /mp4a|ac-3|ec-3/.test(codecs);
+              var opus_only = !!has_bad && !has_good;
+              if (opus_only) Lampa.Noty.show('KinoKino: DASH на LG без звука (Opus) — включаю HLS со звуком');
+              do_play(opus_only);
+            });
+          } else {
+            do_play(false);
+          }
 
           if (viewed.indexOf(hash_file) == -1) {
             viewed.push(hash_file);

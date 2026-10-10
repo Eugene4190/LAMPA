@@ -260,12 +260,31 @@ async function handle(request) {
             text = text.split(bbase).join(self + '/');
           }
         }
-        // v9 mono: нативные плееры (VLC, Mi Video, webOS) не умеют многоголосый
-        // HLS Collapsа (читают длительность, но молчат). Убираем внешние
-        // аудиорендеры — в видеосегментах уже вшита дорожка по умолчанию.
+        /* v15 mono: БЕЗ немого режима. Замерено на «Оппенгеймере» (kp 4664634):
+         * видеосегменты Collaps идут вообще без аудиодорожки (в PMT только
+         * H.264 0x1b, ID3 0x15 и приватный 0xd6 — 1.9 МБ видео на 11.6 с и ни
+         * одного аудио-PID), звук лежит 9 отдельными рендерами AAC в
+         * #EXT-X-MEDIA. Старый mono вырезал их все → КАРТИНКА БЕЗ ЗВУКА
+         * (ровно то, что слышал пользователь на телефоне). Теперь mono оставляет
+         * ОДНУ дорожку на группу (DEFAULT=YES, иначе первую): плеер, не умеющий
+         * переключать переводы, всё равно слышит звук, а лишних рендеров нет. */
         if (params.mono === '1') {
-          text = text.replace(/^#EXT-X-MEDIA:TYPE=AUDIO[^\n]*\n/gm, '');
-          text = text.replace(/,AUDIO="[^"]*"/g, '');
+          const lns = text.split('\n');
+          const groups = {};
+          lns.forEach((l) => {
+            if (l.indexOf('#EXT-X-MEDIA:TYPE=AUDIO') !== 0) return;
+            const gm = l.match(/GROUP-ID="([^"]*)"/);
+            const g = gm ? gm[1] : 'audio';
+            if (!groups[g]) groups[g] = [];
+            groups[g].push(l);
+          });
+          const keep = {};
+          Object.keys(groups).forEach((g) => {
+            const arr = groups[g];
+            const def = arr.filter((l) => l.indexOf('DEFAULT=YES') !== -1);
+            keep[def.length ? def[0] : arr[0]] = true;
+          });
+          text = lns.filter((l) => l.indexOf('#EXT-X-MEDIA:TYPE=AUDIO') !== 0 || keep[l]).join('\n');
         }
         const base = ofLink.substring(0, ofLink.lastIndexOf('/') + 1);
         const abs = (u) => (u.indexOf('http') === 0 ? u : base + u);
@@ -300,32 +319,104 @@ async function handle(request) {
       try { res = await bridge(api); via = 'bridge'; } catch (e) {}
     }
 
-    // 2) «самолечение»: любая ошибка (410/403/404/423/5xx) -> свежий embed ->
-    //    свежие токены для того же сегмента
+    /* 2) «самолечение»: любая ошибка (410/403/404/423/5xx) -> свежий embed ->
+     *    свежие токены для того же сегмента.
+     * v15: лечим и ЗВУК. CDN-кэш источника отдаёт мастер со stale-токенами
+     * отдельных рендеров, поэтому аудиосегмент (-aN.ts) умирает с 410, а видео
+     * продолжает идти — плеер показывает картинку БЕЗ ЗВУКА (на живом тесте
+     * ровно так и вышло). Старое лечение перебирало только видеоварианты
+     * (#EXT-X-STREAM-INF), где аудиосегментов нет в принципе. Теперь:
+     *   - по имени сегмента определяем семью (-vN видео / -aN аудио) и номер,
+     *     сначала перечитываем СВОЙ плейлист (index-aN.m3u8 / index-vN.m3u8);
+     *   - для DASH (.webm/.m4s) перечитываем mpd и пересобираем адрес сегмента
+     *     из свежего SegmentTemplate ($Number$/init) + свежего BaseURL. */
     if (res.status >= 400 && params.Src) {
       try {
         const emb = await upstream(params.Src, 'https://fixtyflux.cfd/');
         const html = await emb.text();
         const mm = html.replace(/\n/g, '').match(/makePlayer\((\{.*?\})\);/);
-        const hls = mm && mm[1].match(/hls:\s*"([^"]+)"/);
-        if (hls) {
-          const mr = await upstream(hls[1]);
-          const mtxt = await mr.text();
-          const vms = mtxt.match(/#EXT-X-STREAM-INF:[^\n]*\n(https?:\/\/[^\n]+)/g) || [];
-          const want = '/' + link.split('/').slice(-2).join('/').split('?')[0];
-          for (let vi = 0; vi < vms.length && res.status >= 400; vi++) {
-            const vurl = vms[vi].split('\n')[1];
-            const vr = await upstream(vurl);
-            if (vr.status >= 400) continue;
-            const vtxt = await vr.text();
-            const lines = vtxt.split('\n').filter((l) => l.trim() && l[0] !== '#');
-            for (const l of lines) {
-              const cand = l.indexOf('http') === 0 ? l : vurl.substring(0, vurl.lastIndexOf('/') + 1) + l;
-              if (cand.split('?')[0].endsWith(want)) {
-                res = await upstream(cand);
-                if (res.status < 400) break;
+        const pbody = mm ? mm[1] : '';
+        const want = '/' + link.split('/').slice(-2).join('/').split('?')[0];
+        const fam = (want.match(/-([av])\d+\.\w+$/i) || [])[1] || '';
+        const famIdx = want.match(/-([av])(\d+)\.\w+$/i);
+
+        const scanPlaylist = async (purl) => {
+          const pr = await upstream(purl);
+          if (pr.status >= 400) return;
+          const ptxt = await pr.text();
+          const lines = ptxt.split('\n').filter((l) => l.trim() && l[0] !== '#');
+          for (const l of lines) {
+            const t = l.trim();
+            const cand = t.indexOf('http') === 0 ? t : purl.substring(0, purl.lastIndexOf('/') + 1) + t;
+            if (cand.split('?')[0].endsWith(want)) {
+              const rr = await upstream(cand);
+              if (rr.status < 400) { res = rr; return; }
+            }
+          }
+        };
+        const scanAll = async (urls) => {
+          for (const u of urls) {
+            if (res.status < 400) return;
+            try { await scanPlaylist(u); } catch (e) { /* следующий */ }
+          }
+        };
+        // точный плейлист своей семьи (index-a5.m3u8 для seg-3-a5.ts) — первым
+        const pickFamily = (urls) => {
+          if (famIdx) {
+            const exact = urls.filter((u) => u.indexOf('index-' + famIdx[1] + famIdx[2] + '.') !== -1);
+            if (exact.length) return exact;
+          }
+          return urls;
+        };
+
+        const hls = pbody.match(/hls:\s*"([^"]+)"/);
+        const dashm = pbody.match(/[^A-Za-z]dash:\s*"([^"]+)"/) || pbody.match(/dasha:\s*"([^"]+)"/);
+
+        if (dashm && /\.(webm|m4s|mp4)$/i.test(want)) {
+          const dr = await upstream(dashm[1]);
+          const dtxt = dr.status < 400 ? await dr.text() : '';
+          if (dtxt) {
+            const bases = [...dtxt.matchAll(/<BaseURL>([^<]+)<\/BaseURL>/g)].map((x) => x[1]);
+            const rel = want.replace(/^\//, '');                    // '4.1268217-0/12.webm'
+            const dir = rel.indexOf('/') !== -1 ? rel.substring(0, rel.lastIndexOf('/') + 1) : '';
+            const fname = rel.substring(rel.lastIndexOf('/') + 1);   // '12.webm' | 'init.webm'
+            const num = fname.split('.')[0];
+            const isInit = /^init\./i.test(fname);
+            const tpls = [...dtxt.matchAll(/<SegmentTemplate[^>]*>/g)].map((x) => x[0]);
+            for (const tp of tpls) {
+              if (res.status < 400) break;
+              const ini = (tp.match(/initialization="([^"]+)"/) || [])[1] || '';
+              const med = (tp.match(/media="([^"]+)"/) || [])[1] || '';
+              let cand = '';
+              if (isInit) {
+                if (ini.split('?')[0] === rel) cand = ini;
+              } else if (med && med.split('?')[0].indexOf(dir) === 0) {
+                cand = med.split(DOLLAR + 'Number' + DOLLAR).join(num);
+                if (cand.split('?')[0] !== rel) cand = '';
+              }
+              if (!cand) continue;
+              for (const b of bases) {
+                const full = b.replace(/\/$/, '') + '/' + cand.replace(/&amp;/g, '&');
+                const rr = await upstream(full);
+                if (rr.status < 400) { res = rr; break; }
               }
             }
+          }
+        } else if (hls) {
+          const mr = await upstream(hls[1]);
+          const mtxt = mr.status < 400 ? await mr.text() : '';
+          const videos = (mtxt.match(/#EXT-X-STREAM-INF:[^\n]*\n(https?:\/\/[^\n]+)/g) || []).map((x) => x.split('\n')[1].trim());
+          const audios = [...mtxt.matchAll(/#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*URI="(https?:\/\/[^"]+)"/g)].map((x) => x[1]);
+          const others = [...mtxt.matchAll(/#EXT-X-MEDIA:[^\n]*URI="(https?:\/\/[^"]+)"/g)]
+            .map((x) => x[1]).filter((u) => audios.indexOf(u) === -1);
+          const order = fam === 'a'
+            ? [pickFamily(audios), videos, audios, others]
+            : fam === 'v'
+              ? [pickFamily(videos), audios, videos, others]
+              : [videos, audios, others];
+          for (const group of order) {
+            if (res.status < 400) break;
+            await scanAll(group);
           }
         }
       } catch (e) { /* остаёмся на исходном ответе */ }

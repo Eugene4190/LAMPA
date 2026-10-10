@@ -19,7 +19,7 @@ const vm = require('vm');
 const https = require('https');
 
 const FILE = process.argv[2] || path.join(__dirname, '..', 'dist', 'online_mod.js');
-const WORKER = process.env.WORKER_URL || 'https://lampa.eugene4190.deno.net';
+const WORKER = process.env.WORKER_URL || 'https://lampa-bridge.netlify.app';
 const DEAD_WORKER = 'https://kinokino-worker-dead-9999.deno.net';
 const code = fs.readFileSync(FILE, 'utf8');
 const UA = 'Mozilla/5.0 (Linux; Android 13; M2012K11AG) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
@@ -230,6 +230,8 @@ function rawGet(url) {
 
 const EVIL = { id: 1, title: 'Обитель зла', original_title: 'Resident Evil', number_of_seasons: 0, kinopoisk_id: 7378605, imdb_id: '' };
 const INTER = { id: 2, title: 'Интерстеллар', original_title: 'Interstellar', number_of_seasons: 0, kinopoisk_id: 258687, imdb_id: 'tt0816692' };
+// у «Оппенгеймера» в Collaps есть и HLS (720p, 9 дорожек), и DASH (1080p VP9+Opus)
+const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenheimer', number_of_seasons: 0, kinopoisk_id: 4664634, imdb_id: 'tt15398776' };
 
 (async () => {
   let loadError = null;
@@ -250,23 +252,57 @@ const INTER = { id: 2, title: 'Интерстеллар', original_title: 'Inter
 
     // имитируем нажатие «играть»
     if (captured.enter) captured.enter({}, {});
-    ok('A: на Android с воркером играем внешним плеером mono-поток', captured.runas === 'android', 'runas=' + JSON.stringify(captured.runas));
+    ok('A: на Android с воркером играем встроенным плеером Lampa (hls.js/dash.js)', captured.runas === 'lampa', 'runas=' + JSON.stringify(captured.runas));
     ok('A: в плеер уехала ссылка через воркер', captured.playData && (captured.playData.url || '').indexOf(normalized) === 0, captured.playData ? (captured.playData.url || '').slice(0, 70) : 'нет play()');
 
-    // и что эта ссылка реально играет
+    // и что эта ссылка реально играет СО ЗВУКОМ: v15 — mono больше не просим,
+    // аудиодорожки Collaps остаются в мастере (видеосегменты-то без звука)
     const playUrl = captured.playData && captured.playData.url;
     if (playUrl) {
       const r = await rawGet(playUrl);
       ok('A: воркер отдаёт плейлист по ссылке плеера', r.status === 200 && r.text.indexOf('#EXTM3U') === 0, 'status=' + r.status);
-      ok('A: mono-плейлист переписан на воркер и без мульти-аудио', r.text.indexOf(WORKER) !== -1 && r.text.indexOf('#EXT-X-MEDIA') === -1, r.text.slice(0, 60));
+      const audioLines = r.text.split('\n').filter((l) => l.indexOf('#EXT-X-MEDIA:TYPE=AUDIO') === 0);
+      ok('A: звук на месте — аудиодорожки НЕ вырезаны (v15, было немым)', audioLines.length > 0, 'дорожек: ' + audioLines.length);
+      ok('A: все ссылки мастера переписаны на воркер', r.text.indexOf(WORKER.replace(/\/$/, '')) !== -1 && !/https:\/\/(?!lampa-bridge)[^\s"]*interkh/.test(r.text), r.text.slice(0, 60));
+      // дорожка по умолчанию реально тянется через воркер (иначе — тишина)
+      const dm = r.text.match(/#EXT-X-MEDIA:TYPE=AUDIO[^\n]*DEFAULT=YES[^\n]*URI="([^"]+)"/);
+      if (dm) {
+        const ra = await rawGet(dm[1]);
+        ok('A: плейлист аудиодорожки через воркер отдаётся', ra.status === 200 && ra.text.indexOf('#EXTM3U') === 0, 'status=' + ra.status);
+        const aseg = ra.text.split('\n').find((l) => l.trim() && l[0] !== '#');
+        if (aseg) {
+          const rs = await rawGet(aseg.trim());
+          ok('A: аудиосегмент приезжает (байты > 10 кБ)', rs.status === 200 && rs.text.length > 10000, 'status=' + rs.status + ' байт=' + rs.text.length);
+        } else ok('A: аудиосегмент приезжает (байты > 10 кБ)', false, 'в плейлисте дорожки нет сегментов');
+      } else ok('A: плейлист аудиодорожки через воркер отдаётся', false, 'нет DEFAULT=YES');
     } else ok('A: воркер отдаёт плейлист по ссылке плеера', false, 'нет url');
   }
 
-  /* ── B. DASH-балансер на Android + воркер → HLS-фолбэк ── */
-  item = await runCard(INTER, 'B. DASH-балансер + воркер (Android)', 'kinokino_dash');
+  /* ── B. DASH-балансер на Android + воркер → честный mpd (v15) ── */
+  item = await runCard(OPPEN, 'B. DASH-балансер + воркер (Android)', 'kinokino_dash');
   ok('B: список построен', !!item);
   if (item) {
-    ok('B: вместо .mpd отдан HLS (встроенный плеер не умеет DASH)', /master\.m3u8/.test(item.file || '') && (item.file || '').indexOf(WORKER + '/enc2/') === 0, (item.file || '').slice(0, 90));
+    ok('B: отдан mpd через воркер (1080p+, а не 720p HLS)', /\.mpd$/.test(item.file || '') && (item.file || '').indexOf(WORKER + '/enc2/') === 0, (item.file || '').slice(0, 90));
+    ok('B: качество подписано честно по mpd', /1080p|2160p|4K/.test(item.quality || ''), item.quality);
+    ok('B: переводы (аудиодорожки) в списке остались', (item.audio_tracks || []).length > 1, String((item.audio_tracks || []).length));
+    if (captured.enter) captured.enter({}, {});
+    ok('B: mpd играет встроенный плеер Lampa (runas=lampa)', captured.runas === 'lampa', 'runas=' + JSON.stringify(captured.runas));
+    const mpdUrl = captured.playData && captured.playData.url;
+    if (mpdUrl) {
+      const r = await rawGet(mpdUrl);
+      const heights = [...new Set((r.text.match(/height="(\d+)"/g) || []).map((x) => parseInt(x.replace(/\D/g, ''))))].sort((a, b) => b - a);
+      ok('B: воркер отдаёт mpd', r.status === 200 && r.text.indexOf('<MPD') !== -1, 'status=' + r.status);
+      ok('B: в mpd есть 1080p и выше', heights.length > 0 && heights[0] >= 1080, 'высоты: ' + heights.join('/'));
+      ok('B: BaseURL завёрнут в воркер «папкой» /seg/', /<BaseURL>[^<]*\/enc2\/[^<]*\/seg\/<\/BaseURL>/.test(r.text), (r.text.match(/<BaseURL>([^<]{0,60})/) || [])[1]);
+      // сегмент по схеме BaseURL + initialization должен реально прийти
+      const base = (r.text.match(/<BaseURL>([^<]+)<\/BaseURL>/) || [])[1];
+      const init = (r.text.match(/initialization="([^"]+)"/) || [])[1];
+      if (base && init) {
+        const segUrl = base + init.replace(/&amp;/g, '&');
+        const rs = await rawGet(segUrl);
+        ok('B: init-сегмент DASH приезжает через воркер', rs.status === 200 && rs.text.length > 100, 'status=' + rs.status + ' байт=' + rs.text.length);
+      } else ok('B: init-сегмент DASH приезжает через воркер', false, 'нет BaseURL/initialization');
+    } else ok('B: воркер отдаёт mpd', false, 'нет url');
   }
 
   /* ── C. мёртвый воркер → откат на прямые ссылки ── */
