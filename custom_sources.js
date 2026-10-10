@@ -562,7 +562,7 @@ function createKinokino(component, _object, prefer_dash) {
                 var vurl = pick(mtxt);
                 if (vurl.indexOf('http') !== 0) vurl = '';
                 if (!vurl) {
-                  Lampa.Noty.show('DIAG ' + mark + ' master?');
+                  Lampa.Noty.show('DIAG ' + mark + ' master? ' + (mtxt || '').length + '|' + (mtxt || '').replace(/\n/g, ' ').substring(0, 20));
                   return;
                 }
                 var d2 = new Lampa.Reguest();
@@ -571,7 +571,7 @@ function createKinokino(component, _object, prefer_dash) {
                   var surl = pick(vtxt);
                   if (surl && surl.indexOf('http') !== 0) surl = vurl.substring(0, vurl.lastIndexOf('/') + 1) + surl;
                   if (!surl) {
-                    Lampa.Noty.show('DIAG ' + mark + ' vari?');
+                    Lampa.Noty.show('DIAG ' + mark + ' vari? ' + (vtxt || '').length + '|' + (vtxt || '').replace(/\n/g, ' ').substring(0, 20));
                     return;
                   }
                   var d3 = new Lampa.Reguest();
