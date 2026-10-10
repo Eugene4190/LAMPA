@@ -53,7 +53,13 @@ function createKinokino(component, _object, prefer_dash) {
   // где CDN Collaps отдаёт 503 на User-Agent телевизора — воркер подменит UA
   var DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
   var stream_prox = Lampa.Storage.field('online_mod_proxy_other') === true ? (Lampa.Storage.field('online_mod_proxy_other_url') + '' || '') : '';
-  var stream_prox_enc = stream_prox ? 'param/User-Agent=' + encodeURIComponent(DESKTOP_UA) + '/' : '';
+  var last_embed = '';
+
+  function streamEnc() {
+    var e = stream_prox ? 'param/User-Agent=' + encodeURIComponent(DESKTOP_UA) + '/' : '';
+    if (e && last_embed) e += 'param/Src=' + encodeURIComponent(last_embed) + '/';
+    return e;
+  }
 
   if (prox) {
     prox_enc += 'param/User-Agent=' + encodeURIComponent(user_agent) + '/';
@@ -95,7 +101,7 @@ function createKinokino(component, _object, prefer_dash) {
 
     network.clear();
     network.timeout(8000);
-    network.native(component.proxyLink(url, stream_prox, stream_prox_enc, 'enc2'), function (str) {
+    network.native(component.proxyLink(url, stream_prox, streamEnc(), 'enc2'), function (str) {
       var h = 0;
       var re = prefer_dash ? /height="(\d+)"/g : /RESOLUTION=\d+x(\d+)/g;
       var m;
@@ -156,7 +162,10 @@ function createKinokino(component, _object, prefer_dash) {
     network.clear();
     network.timeout(10000);
     network.native(component.proxyLink(urls[i], prox, prox_enc, 'enc2t'), function (str) {
-      if (str && str.indexOf('makePlayer(') !== -1) parse(str, attempt);else fetchEmbeds(urls, i + 1, onEmpty, attempt);
+      if (str && str.indexOf('makePlayer(') !== -1) {
+        last_embed = urls[i];
+        parse(str, attempt);
+      } else fetchEmbeds(urls, i + 1, onEmpty, attempt);
     }, function () {
       fetchEmbeds(urls, i + 1, onEmpty, attempt);
     }, false, {
@@ -345,12 +354,12 @@ function createKinokino(component, _object, prefer_dash) {
               info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
               season: season.season,
               episode: parseInt(episode.episode),
-              file: component.proxyLink(file, stream_prox, stream_prox_enc, 'enc2'),
+              file: component.proxyLink(file, stream_prox, streamEnc(), 'enc2'),
               subtitles: episode.cc ? episode.cc.map(function (c) {
                 var url = fixUrl(c.url || '');
                 return {
                   label: c.name,
-                  url: component.processSubs(component.proxyLink(url, stream_prox, stream_prox_enc, 'enc2'))
+                  url: component.processSubs(component.proxyLink(url, stream_prox, streamEnc(), 'enc2'))
                 };
               }) : false,
               audio_tracks: tracks.length ? tracks : false
@@ -370,12 +379,12 @@ function createKinokino(component, _object, prefer_dash) {
         title: extract.title || select_title,
         quality: qualityLabel(fallback),
         info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
-        file: component.proxyLink(file, stream_prox, stream_prox_enc, 'enc2'),
+        file: component.proxyLink(file, stream_prox, streamEnc(), 'enc2'),
         subtitles: extract.source.cc ? extract.source.cc.map(function (c) {
           var url = fixUrl(c.url || '');
           return {
             label: c.name,
-            url: component.processSubs(component.proxyLink(url, stream_prox, stream_prox_enc, 'enc2'))
+            url: component.processSubs(component.proxyLink(url, stream_prox, streamEnc(), 'enc2'))
           };
         }) : false,
         audio_tracks: tracks.length ? tracks : false
