@@ -744,6 +744,16 @@ function createKinokino(component, _object, prefer_dash) {
               var d1 = new Lampa.Reguest();
               d1.timeout(12000);
               d1.native(first.url, function (mtxt) {
+                // v15.2: у DASH нет «мастер -> вариант»: адреса сегментов mpd
+                // строит сам (BaseURL + $Number$). Раньше DIAG на mpd писал
+                // «master?» и пугал пользователя. Для mpd считаем репрезентации
+                // и аудио-кодек — этого для диагностики хватает.
+                if ((mtxt || '').indexOf('<MPD') !== -1) {
+                  var reps = (mtxt.match(/<Representation/g) || []).length;
+                  var aud = (mtxt.match(/contentType="audio"/g) || []).length;
+                  Lampa.Noty.show('DIAG ' + mark + ' mpd ok rep=' + reps + ' aud=' + aud + (/codecs="opus"/.test(mtxt) ? ' opus' : ' aac'));
+                  return;
+                }
                 var vurl = pick(mtxt);
                 if (vurl.indexOf('http') !== 0) vurl = '';
                 if (!vurl) {
