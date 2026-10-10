@@ -100,6 +100,24 @@ function makeItemStub(el) {
 
 const LampaReal = {
   Storage: makeStorage(),
+  /* v15: в сборках автора от 10.10.2026 настройки плагина регистрируются
+   * через Lampa.SettingsApi (getComponent/addComponent/addParam) — в Lampa
+   * этот API есть, добавляем и в заглушку, иначе тест новой сборки падает
+   * с «Lampa.SettingsApi.getComponent is not a function». */
+  SettingsApi: (function () {
+    const comps = {};
+    const params = [];
+    return {
+      getComponent: (n) => comps[n] || null,
+      addComponent: (c) => { if (c && c.component) comps[c.component] = c; },
+      addParam: (p) => { params.push(p); },
+      getParam: (n) => params.find((p) => p && p.name === n) || null,
+      removeComponent: (n) => { delete comps[n]; },
+      removeParams: () => {},
+      allComponents: () => comps,
+      allParams: () => params,
+    };
+  })(),
   Lang: {
     add: (data) => { for (const l in data) langData[l] = Object.assign(langData[l] || {}, data[l]); },
     translate: (key) => {
@@ -209,9 +227,11 @@ async function runCard(movie, label, balanser) {
   comp.activity = activity;
   comp.create();
   comp.filter({}, {});
-  const got = await waitFor(() => captured.items.length > 0 || captured.noty, 40000);
+  // DIAG-уведомление прилетает асинхронно (и может долететь уже в следующем
+  // сценарии) — его за «пусто» не считаем
+  const got = await waitFor(() => captured.items.length > 0 || (captured.noty && captured.noty.indexOf('DIAG') !== 0), 40000);
   console.log(`\n── ${label}: «${movie.title}» (${balanser || 'kinokino'}) ──`);
-  if (!got) { console.log('  ✘ пусто за 40 секунд. noty:', captured.noty || '—'); return null; }
+  if (!got || !captured.items.length) { console.log('  ✘ пусто за 40 секунд. noty:', captured.noty || '—'); return null; }
   const it = captured.items[0];
   console.log('    файл:', (it.file || '').slice(0, 110) + '…');
   return it;
@@ -277,6 +297,7 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
       } else ok('A: плейлист аудиодорожки через воркер отдаётся', false, 'нет DEFAULT=YES');
     } else ok('A: воркер отдаёт плейлист по ссылке плеера', false, 'нет url');
   }
+  captured.noty = ''; // DIAG из сценария A не должен мешать сценарию B
 
   /* ── B. DASH-балансер на Android + воркер → честный mpd (v15) ── */
   item = await runCard(OPPEN, 'B. DASH-балансер + воркер (Android)', 'kinokino_dash');

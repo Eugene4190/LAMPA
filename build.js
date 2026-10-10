@@ -120,37 +120,69 @@ function patch(src, opts) {
   body.forEach((n) => { if (n.type === 'FunctionDeclaration' && n.id) fnByName[n.id.name] = n; });
 
   const keep = CONFIG.UNLOCK_ALL ? null : CONFIG.KEEP.slice();
-  const ALL_SOURCES = ['lumex', 'lumex2', 'rezka2', 'kinobase', 'collaps', 'cdnmovies', 'filmix',
-    'zetflix', 'fancdn', 'fancdn2', 'fanserials', 'videoseed', 'vibix', 'redheadsound',
+  const ALL_SOURCES = ['lumex', 'lumex2', 'rezka2', 'kinobase', 'collaps', 'collaps-dash', 'cdnmovies', 'filmix',
+    'zetflix', 'fancdn', 'fancdn2', 'fanserials', 'videoseed', 'vibix', 'redheadsound', 'redheadsound-dash',
     'cdnvideohub', 'anilibria', 'anilibria2', 'animelib', 'kodik', 'alloha', 'kinopub'];
-  const removedNames = keep ? ALL_SOURCES.filter((n) => !keep.includes(n)) : [];
 
-  // --- 1. находим массив all_sources ---
+  /* --- 1. находим реестр источников ---
+   * До сборки автора 10.10.2026 это был `var all_sources = [ {...}, ... ]`.
+   * Теперь автор собирает его из реестра: `var Balancers = [...]` +
+   * `all_sources = Balancers.map(...)`. Ищем оба варианта — build.js должен
+   * переживать обновление апстрима без правок. */
   let allSourcesArr = null;
+  let registryName = '';
   walk(iife, (n) => {
-    if (n.type === 'VariableDeclarator' && n.id.name === 'all_sources' && n.init && n.init.type === 'ArrayExpression') {
+    if (n.type === 'VariableDeclarator' && n.init && n.init.type === 'ArrayExpression' &&
+        (n.id.name === 'all_sources' || n.id.name === 'Balancers')) {
       allSourcesArr = n.init;
+      registryName = n.id.name;
     }
   });
-  if (!allSourcesArr) throw new Error('Не найден массив all_sources — структура файла автора изменилась');
+  if (!allSourcesArr) throw new Error('Не найден реестр источников (all_sources/Balancers) — структура файла автора изменилась');
 
   const entryName = (el) => {
+    if (!el || el.type !== 'ObjectExpression') return null;
     const p = el.properties.find((pr) => pr.key && (pr.key.name === 'name' || pr.key.value === 'name'));
     return p && p.value && p.value.value;
   };
+  // в новом реестре один класс может обслуживать два источника
+  // (collaps -> «Collaps» и «Collaps (DASH)») — такие классы удалять нельзя
+  const entryModule = (el) => {
+    if (!el || el.type !== 'ObjectExpression') return null;
+    const p = el.properties.find((pr) => pr.key && (pr.key.name === 'module' || pr.key.value === 'module'));
+    return p && p.value && p.value.name;
+  };
+  const registryNames = allSourcesArr.elements.map(entryName).filter(Boolean);
+  const removedNames = keep
+    ? Array.from(new Set(registryNames.concat(ALL_SOURCES))).filter((n) => !keep.includes(n))
+    : [];
 
   // --- 2. STRIP: пересобираем all_sources только из нужных + удаляем классы ---
   if (opts.strip && keep) {
     const keptEls = allSourcesArr.elements.filter((el) => keep.includes(entryName(el)));
+    const usedModules = {};
+    keptEls.forEach((el) => { const m = entryModule(el); if (m) usedModules[m] = true; });
     const NL = src.includes('\r\n') ? '\r\n' : '\n';
     const rebuilt = '[' + NL + keptEls.map((el) => '        ' + src.slice(el.start, el.end)).join(',' + NL) + NL + '      ]';
     edits.push({ start: allSourcesArr.start, end: allSourcesArr.end, text: rebuilt });
 
     removedNames.forEach((name) => {
       const fn = fnByName[name];
-      if (fn) {
+      if (fn && !usedModules[name]) {
         edits.push({ start: fn.start, end: fn.end, text: '/* МОИ ПРАВКИ: источник «' + name + '» удалён */' });
         removedFns.push(name);
+        /* v15: в сборках автора от 10.10.2026 класс источника обрастает
+         * статикой уже ПОСЛЕ объявления (lumex.initSettings = ...,
+         * lumex.hideSettings = ...). Если вырезать только функцию, плагин
+         * падает при загрузке с «lumex is not defined» — убираем и статику. */
+        body.forEach((n) => {
+          if (n.type !== 'ExpressionStatement') return;
+          const a = n.expression;
+          if (!a || a.type !== 'AssignmentExpression') return;
+          if (!a.left || a.left.type !== 'MemberExpression') return;
+          if (!a.left.object || a.left.object.type !== 'Identifier' || a.left.object.name !== name) return;
+          edits.push({ start: n.start, end: n.end, text: '/* МОИ ПРАВКИ: ' + name + '.' + ((a.left.property && (a.left.property.name || a.left.property.value)) || '?') + ' удалён */' });
+        });
       }
     });
 

@@ -84,6 +84,24 @@ function makeStorage() {
 
 const LampaReal = {
   Storage: makeStorage(),
+  /* v15: в сборках автора от 10.10.2026 настройки плагина регистрируются
+   * через Lampa.SettingsApi (getComponent/addComponent/addParam) — в Lampa
+   * этот API есть, добавляем и в заглушку, иначе тест новой сборки падает
+   * с «Lampa.SettingsApi.getComponent is not a function». */
+  SettingsApi: (function () {
+    const comps = {};
+    const params = [];
+    return {
+      getComponent: (n) => comps[n] || null,
+      addComponent: (c) => { if (c && c.component) comps[c.component] = c; },
+      addParam: (p) => { params.push(p); },
+      getParam: (n) => params.find((p) => p && p.name === n) || null,
+      removeComponent: (n) => { delete comps[n]; },
+      removeParams: () => {},
+      allComponents: () => comps,
+      allParams: () => params,
+    };
+  })(),
   Lang: {
     add: (data) => { for (const l in data) langData[l] = Object.assign(langData[l] || {}, data[l]); },
     translate: (key) => {

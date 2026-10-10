@@ -50,6 +50,24 @@ function makeStorage() {
 
 const LampaReal = {
   Storage: makeStorage(),
+  /* v15: в сборках автора от 10.10.2026 настройки плагина регистрируются
+   * через Lampa.SettingsApi (getComponent/addComponent/addParam) — в Lampa
+   * этот API есть, добавляем и в заглушку, иначе тест новой сборки падает
+   * с «Lampa.SettingsApi.getComponent is not a function». */
+  SettingsApi: (function () {
+    const comps = {};
+    const params = [];
+    return {
+      getComponent: (n) => comps[n] || null,
+      addComponent: (c) => { if (c && c.component) comps[c.component] = c; },
+      addParam: (p) => { params.push(p); },
+      getParam: (n) => params.find((p) => p && p.name === n) || null,
+      removeComponent: (n) => { delete comps[n]; },
+      removeParams: () => {},
+      allComponents: () => comps,
+      allParams: () => params,
+    };
+  })(),
   Lang: {
     add: (data) => { for (const l in data) langData[l] = Object.assign(langData[l] || {}, data[l]); },
     translate: (key) => {
@@ -142,7 +160,17 @@ ok('плагин загрузился без ошибок', !loadError, loadErro
 
 if (!loadError) {
   ok('компонент online_mod зарегистрирован', typeof captured.component === 'function');
-  ok('вкладка настроек «Онлайн Мод» создана', !!templates['settings_online_mod']);
+  /* v15: автор плагина с 10.10.2026 регистрирует настройки через
+   * Lampa.SettingsApi (addComponent/addParam), а не шаблоном
+   * settings_online_mod — проверяем оба механизма, чтобы тест был зелёным
+   * и на старой, и на новой базе. */
+  const apiDump = (function () {
+    try {
+      return JSON.stringify({ c: LampaReal.SettingsApi.allComponents(), p: LampaReal.SettingsApi.allParams() });
+    } catch (e) { return ''; }
+  })();
+  ok('вкладка настроек «Онлайн Мод» создана', !!templates['settings_online_mod'] || /online_mod/.test(apiDump),
+     templates['settings_online_mod'] ? 'шаблон' : (apiDump ? 'SettingsApi' : 'ничего'));
   const TITLES = { lumex:'Lumex', lumex2:'Lumex (Ads)', rezka2:'HDrezka', kinobase:'Kinobase', collaps:'Collaps',
     'collaps-dash':'Collaps (DASH)', cdnmovies:'CDNMovies', filmix:'Filmix', zetflix:'Zetflix', fancdn:'FanCDN',
     fancdn2:'FanCDN (ID)', fanserials:'FanSerials', videoseed:'VideoSeed', vibix:'Vibix', redheadsound:'RedHeadSound',
@@ -174,7 +202,7 @@ if (!loadError) {
   ok('список балансеров = ' + exp.join(' + '), JSON.stringify(sort) === JSON.stringify(exp), 'получено: ' + (sort.join(', ') || '—'));
 
   // настройки: не осталось пунктов удалённых источников
-  const tpl = templates['settings_online_mod'] || '';
+  const tpl = (templates['settings_online_mod'] || '') + apiDump;
   const isLite = !/full/.test(FILE);
   const visible = sort.length ? sort : (expected || []);
   const junk = Object.keys(TITLES)
