@@ -41,7 +41,6 @@ export default {
 };
 
 async function handle(request) {
-    const CLIENT_RANGE = request.headers.get('range');
     const ACAO = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': '*',
@@ -59,8 +58,6 @@ async function handle(request) {
       return new Response('kinokino worker ok', { headers: ACAO });
     }
 
-    // v11: Range/Content-Length/Content-Range/Accept-Ranges сквозь воркер —
-    // нативные плееры ТВ (webOS «Фото и видео») без них не стартуют HLS.
     // v10: ретрай upstream + heal перебирает все варианты/кандидаты сегмента.
     // v9: mono-режим (param/mono=1) — одно потоковое HLS с вшитой дорожкой
     //     для нативных плееров, не умеющих многоголосый HLS Collapsа.
@@ -162,11 +159,8 @@ async function handle(request) {
       let cur = unwrap(u);
       for (let hop = 0; hop < 6; hop++) {
         const t = new URL(cur);
-        const hdrs = { 'User-Agent': UA, 'Referer': ref || (t.origin + '/'), 'Accept': '*/*' };
-        // v11: нативные плееры (webOS, ТВ, VLC) шлют Range — пропускаем наверх
-        if (CLIENT_RANGE) hdrs['Range'] = CLIENT_RANGE;
         const r = await fetch(cur, {
-          headers: hdrs,
+          headers: { 'User-Agent': UA, 'Referer': ref || (t.origin + '/'), 'Accept': '*/*' },
           redirect: 'manual',
         });
         if (r.status >= 300 && r.status < 400) {
@@ -215,14 +209,9 @@ async function handle(request) {
         text = text.replace(/URI="((?!http|data:)[^"]+)"/g, (m0, u) => 'URI="' + wrap(abs(u)) + '"');
         return new Response(text, { headers: Object.assign({ 'Content-Type': ct, 'Cache-Control': 'no-store' }, ACAO) });
       }
-      const bh = { 'Content-Type': ct, 'Cache-Control': 'public, max-age=300', 'Accept-Ranges': 'bytes' };
-      const cl = res.headers.get('content-length');
-      if (cl) bh['Content-Length'] = cl;
-      const cr = res.headers.get('content-range');
-      if (cr) bh['Content-Range'] = cr;
       return new Response(res.body, {
         status: res.status,
-        headers: Object.assign(bh, ACAO),
+        headers: Object.assign({ 'Content-Type': ct, 'Cache-Control': 'public, max-age=300' }, ACAO),
       });
     };
 

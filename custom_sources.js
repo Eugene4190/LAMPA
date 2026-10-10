@@ -153,8 +153,6 @@ function createKinokino(component, _object, prefer_dash) {
   // а на Android с включённым прокси мы форсируем именно встроенный —
   // поэтому там DASH-балансер честно отдаёт HLS-поток
   function dashActive() {
-    // v14: DASH(1080p) оставляем там, где его есть чем играть: десктоп и webOS
-    // (родной плеер ТВ умеет MPD); на android — HLS mono для внешних плееров
     return prefer_dash && !(stream_prox && Lampa.Platform.is('android'));
   }
 
@@ -518,10 +516,6 @@ function createKinokino(component, _object, prefer_dash) {
             hls_retry_timeout: 60000
           };
 
-          // v11: на webOS просим нативный HLS-режим встроенного плеера
-          // (парсер плейлистов + <video> телевизора), MSE на старых webOS слабый
-          if (Lampa.Platform.is('webos')) first.hls_type = 'native';
-
           if (element.season) {
             items.forEach(function (elem) {
               playlist.push({
@@ -564,11 +558,7 @@ function createKinokino(component, _object, prefer_dash) {
                 var vurl = pick(mtxt);
                 if (vurl.indexOf('http') !== 0) vurl = '';
                 if (!vurl) {
-                  if ((mtxt || '').indexOf('<MPD') !== -1 || (mtxt || '').indexOf('<?xml') === 0) {
-                    Lampa.Noty.show('DIAG ' + mark + ' mpd (DASH) ' + (mtxt || '').length);
-                    return;
-                  }
-                  Lampa.Noty.show('DIAG ' + mark + ' master? ' + (mtxt || '').length + '|' + (mtxt || '').replace(/\n/g, ' ').substring(0, 20));
+                  Lampa.Noty.show('DIAG ' + mark + ' master?');
                   return;
                 }
                 var d2 = new Lampa.Reguest();
@@ -577,7 +567,7 @@ function createKinokino(component, _object, prefer_dash) {
                   var surl = pick(vtxt);
                   if (surl && surl.indexOf('http') !== 0) surl = vurl.substring(0, vurl.lastIndexOf('/') + 1) + surl;
                   if (!surl) {
-                    Lampa.Noty.show('DIAG ' + mark + ' vari? ' + (vtxt || '').length + '|' + (vtxt || '').replace(/\n/g, ' ').substring(0, 20));
+                    Lampa.Noty.show('DIAG ' + mark + ' vari?');
                     return;
                   }
                   var d3 = new Lampa.Reguest();
@@ -619,7 +609,7 @@ function createKinokino(component, _object, prefer_dash) {
             // v9: многоголосый поток умеет только десктопный hls.js; на телефоне и
             // ТВ играем нативными/внешними плеерами mono-поток
             if (Lampa.Platform.is('android')) Lampa.Player.runas('android');
-            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas(prefer_dash ? 'webos' : 'lampa'); // v14: HLS — встроенным плеером Lampa (720p); DASH(1080p) — родным плеером webOS: только он умеет MPD, а воркер v11 даёт ему Range
+            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas('webos');
             else if (stream_prox && Lampa.Platform.is('tizen')) Lampa.Player.runas('tizen');
             else Lampa.Player.runas('');
           }
