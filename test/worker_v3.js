@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 
 const WORKER_FILE = process.argv[2] || path.join(__dirname, '..', 'kinokino_worker.js');
-const LIVE = process.env.WORKER_URL || 'https://graceful-gannet-9372.eugene4190.deno.net';
+const LIVE = process.env.WORKER_URL || 'https://lampa.eugene4190.deno.net';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 const results = [];
