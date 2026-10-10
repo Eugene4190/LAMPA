@@ -22,6 +22,17 @@
  *      multi-audio), поэтому список = одна строка на фильм, а перевод
  *      переключается в плеере кнопкой аудиодорожек. Субтитры RU/EN/UK — там же.
  *   6. Сериалы: фильтр сезонов, серии списком.
+ *   7. Свой прокси (Настройки → Онлайн Мод (my) → «Использовать альтернативный
+ *      прокси» + «Альтернативный прокси» = адрес воркера kinokino_worker.js):
+ *        - адрес нормализуется (пробелы/протокол/слэш на конце — можно вводить
+ *          как угодно, «...deno.net» и «...deno.net/» равнозначны);
+ *        - все потоки идут через воркер (обходит 423 по Origin lampa.mx,
+ *          503 на UA телевизоров, сам оживляет умершие от ротации ссылки);
+ *        - на телефоне/в браузере при живом воркере играем встроенным плеером
+ *          Lampa (hls.js): только он умеет многоголосый HLS и дорожки;
+ *        - если воркер не отвечает плейлистом — тихий откат на прямые ссылки;
+ *        - DASH-балансер на Android с воркером отдаёт HLS (встроенный плеер
+ *          не умеет mpd, а системные плееры — многоголосый поток).
  *
  * Поиск только по ID КиноПоиска/IMDB (по названию API сайта не умеет) —
  * поэтому в CONFIG.EXTRA_SOURCES стоит search:false, kp:true, imdb:true.
@@ -49,10 +60,21 @@ function createKinokino(component, _object, prefer_dash) {
   var prox = component.proxy('collaps');
   var prox_enc = '';
 
-  // свой прокси (Настройки → Онлайн Мод (my) → «свой прокси»): нужен на webOS/Tizen,
-  // где CDN Collaps отдаёт 503 на User-Agent телевизора — воркер подменит UA
+  // свой прокси (Настройки → Онлайн Мод (my) → «Альтернативный прокси»): нужен на webOS/Tizen,
+  // где CDN Collaps отдаёт 503 на User-Agent телевизора — воркер подменит UA.
+  // Нормализуем ввод пользователя: пробелы, протокол, ОБЯЗАТЕЛЬНЫЙ слэш на конце
+  // (proxyLink склеивает proxy + 'enc2/...' — без слэша получается битый хост
+  // вида «...deno.netenc2/...» и плеер не открывается)
   var DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-  var stream_prox = Lampa.Storage.field('online_mod_proxy_other') === true ? (Lampa.Storage.field('online_mod_proxy_other_url') + '' || '') : '';
+  var stream_prox = '';
+
+  if (Lampa.Storage.field('online_mod_proxy_other') === true) {
+    stream_prox = (Lampa.Storage.field('online_mod_proxy_other_url') + '').replace(/^\s+|\s+$/g, '');
+    if (stream_prox.indexOf('//') === 0) stream_prox = 'https:' + stream_prox;
+    else if (stream_prox && stream_prox.indexOf('://') === -1) stream_prox = 'https://' + stream_prox;
+    if (stream_prox && stream_prox.charAt(stream_prox.length - 1) !== '/') stream_prox += '/';
+  }
+
   var last_embed = '';
 
   function streamEnc() {
@@ -65,11 +87,18 @@ function createKinokino(component, _object, prefer_dash) {
     prox_enc += 'param/User-Agent=' + encodeURIComponent(user_agent) + '/';
   }
 
-  var play_headers = !prox && Lampa.Platform.is('android') ? {
-    'User-Agent': user_agent,
-    'Origin': 'https://api.nextembed.ws',
-    'Referer': 'https://api.nextembed.ws/'
-  } : {};
+  // Заголовки для прямого (не через прокси) воспроизведения на Android.
+  // Через воркер они не нужны: воркер сам подставляет UA/Referer, а встроенный
+  // плеер браузера такие заголовки выставить всё равно не может.
+  function makePlayHeaders() {
+    return !prox && !stream_prox && Lampa.Platform.is('android') ? {
+      'User-Agent': user_agent,
+      'Origin': 'https://api.nextembed.ws',
+      'Referer': 'https://api.nextembed.ws/'
+    } : {};
+  }
+
+  var play_headers = makePlayHeaders();
   var filter_items = {};
   var last_id = '';
   var choice = {
@@ -87,15 +116,22 @@ function createKinokino(component, _object, prefer_dash) {
     return component.fixLinkProtocol(url, prefer_http, true);
   }
 
+  // DASH не играется встроенным плеером Lampa (hls.js умеет только HLS),
+  // а на Android с включённым прокси мы форсируем именно встроенный —
+  // поэтому там DASH-балансер честно отдаёт HLS-поток
+  function dashActive() {
+    return prefer_dash && !(stream_prox && Lampa.Platform.is('android'));
+  }
+
   function pickFile(src) {
     if (!src) return '';
-    return (prefer_dash && (src.dasha || src.dash)) || src.hls || '';
+    return (dashActive() && (src.dasha || src.dash)) || src.hls || '';
   }
 
   /* ── честная метка качества: смотрим реальный мастер-плейлист ── */
   function probeQuality(url, onDone) {
     if (!url) {
-      onDone(0);
+      onDone(0, true);
       return;
     }
 
@@ -103,7 +139,7 @@ function createKinokino(component, _object, prefer_dash) {
     network.timeout(8000);
     network.native(component.proxyLink(url, stream_prox, streamEnc(), 'enc2'), function (str) {
       var h = 0;
-      var re = prefer_dash ? /height="(\d+)"/g : /RESOLUTION=\d+x(\d+)/g;
+      var re = dashActive() ? /height="(\d+)"/g : /RESOLUTION=\d+x(\d+)/g;
       var m;
       str = str || '';
 
@@ -112,9 +148,12 @@ function createKinokino(component, _object, prefer_dash) {
         if (v > h) h = v;
       }
 
-      onDone(h);
+      // ok = ответ вообще похож на плейлист (если через прокси приехала чушь —
+      // воркер мёртв/не тот, и прокси надо сбросить до прямых ссылок)
+      var ok = !stream_prox || str.indexOf('#EXTM3U') !== -1 || str.indexOf('<MPD') !== -1 || str.indexOf('MPD') !== -1;
+      onDone(h, ok);
     }, function () {
-      onDone(0);
+      onDone(0, !stream_prox);
     }, false, {
       dataType: 'text',
       headers: play_headers
@@ -223,10 +262,23 @@ function createKinokino(component, _object, prefer_dash) {
             probe_url = pickFile(extract.playlist.seasons[0].episodes[0]);
           }
 
-          probeQuality(probe_url, function (h) {
+          var finalize = function (h) {
             detected_height = h;
             filter();
             append(filtred());
+          };
+
+          probeQuality(probe_url, function (h, prox_ok) {
+            if (!prox_ok && stream_prox) {
+              // прокси не отвечает плейлистом (воркер мёртв или адрес кривой) —
+              // сбрасываемся на прямые ссылки, чтобы хоть что-то открывалось,
+              // и перечитываем качество уже напрямую
+              stream_prox = '';
+              play_headers = makePlayHeaders();
+              probeQuality(probe_url, function (h2) {
+                finalize(h2);
+              });
+            } else finalize(h);
           });
         } else {
           searchBy(last_id, function () {
@@ -335,7 +387,7 @@ function createKinokino(component, _object, prefer_dash) {
 
   function filtred() {
     var filtred = [];
-    var fallback = prefer_dash ? '1080p' : '720p';
+    var fallback = dashActive() ? '1080p' : '720p';
 
     if (extract.playlist) {
       extract.playlist.seasons.forEach(function (season, i) {
@@ -445,10 +497,20 @@ function createKinokino(component, _object, prefer_dash) {
           }
 
           if (playlist.length > 1) first.playlist = playlist;
-          // встроенный плеер Lampa (webview) сайт-источник блокирует по Origin
-          // (423 на lampa.mx), поэтому по умолчанию играем системным/внешним
-          // плеером; принудительно Lampa — только если пользователь сам выбрал
+          // Выбор плеера:
+          //  - пользователь сам выбрал в контекстном меню — уважаем (options.runas);
+          //  - прописан свой прокси-воркер — на телефоне/в браузере играем встроенным
+          //    плеером Lampa (hls.js): воркер отдаёт CORS-заголовки, значит блокировка
+          //    Origin lampa.mx (423) больше не мешает, а встроенный плеер — единственный,
+          //    кто умеет многоголосый HLS (Mi Video/VLC-интенты на нём спотыкаются);
+          //  - на webOS/Tizen оставляем системный плеер (там встроенный слабый,
+          //    а воркер и так снимает блокировку по UA);
+          //  - иначе — как настроено в Lampa (по умолчанию системный).
           if (options && options.runas) Lampa.Player.runas(options.runas);
+          else if (Lampa.Player.runas) {
+            if (stream_prox && !(Lampa.Platform.is('webos') || Lampa.Platform.is('tizen') || Lampa.Platform.is('orsay'))) Lampa.Player.runas('lampa');
+            else Lampa.Player.runas('');
+          }
           Lampa.Player.play(first);
           Lampa.Player.playlist(playlist);
 
