@@ -77,9 +77,14 @@ function createKinokino(component, _object, prefer_dash) {
 
   var last_embed = '';
 
-  function streamEnc() {
+  // v9: нативные плееры (Android, webOS) не умеют многоголосый HLS Коллапса —
+  // для них просим у воркера mono-плейлист (дорожка по умолчанию вшита в видео)
+  var use_mono = Lampa.Platform.is('android') || Lampa.Platform.is('webos') || Lampa.Platform.is('tizen');
+
+  function streamEnc(mono) {
     var e = stream_prox ? 'param/User-Agent=' + encodeURIComponent(DESKTOP_UA) + '/' : '';
     if (e && last_embed) e += 'param/Src=' + encodeURIComponent(last_embed) + '/';
+    if (mono) e += 'param/mono=1/';
     return e;
   }
 
@@ -101,9 +106,14 @@ function createKinokino(component, _object, prefer_dash) {
     return name.replace(/\.(php|asp|aspx|jsp|jspx|cgi|pl|py|rb|env|ini|conf|config|htaccess|htpasswd|git|yml|yaml|sql)$/, '.txt') || 'seg';
   }
 
-  function proxUrl(link) {
-    if (!link || !stream_prox) return link;
-    return stream_prox + 'enc2/' + b64url(streamEnc() + link) + '/' + streamName(link);
+  function proxUrl(link, mono) {
+    if (!link) return link;
+    if (!stream_prox) {
+      // без прокси mono всё равно полезен нативным плеерам: отдаём прямую
+      // ссылку, а моно-плейлист попросить не у кого — оставим как есть
+      return link;
+    }
+    return stream_prox + 'enc2/' + b64url(streamEnc(mono) + link) + '/' + streamName(link);
   }
 
   if (prox) {
@@ -160,7 +170,7 @@ function createKinokino(component, _object, prefer_dash) {
 
     network.clear();
     network.timeout(8000);
-    network.native(proxUrl(url), function (str) {
+    network.native(proxUrl(url, use_mono), function (str) {
       var h = 0;
       var re = dashActive() ? /height="(\d+)"/g : /RESOLUTION=\d+x(\d+)/g;
       var m;
@@ -429,12 +439,12 @@ function createKinokino(component, _object, prefer_dash) {
               info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
               season: season.season,
               episode: parseInt(episode.episode),
-              file: proxUrl(file),
+              file: proxUrl(file, use_mono),
               subtitles: episode.cc ? episode.cc.map(function (c) {
                 var url = fixUrl(c.url || '');
                 return {
                   label: c.name,
-                  url: component.processSubs(proxUrl(url))
+                  url: component.processSubs(proxUrl(url, false))
                 };
               }) : false,
               audio_tracks: tracks.length ? tracks : false
@@ -454,12 +464,12 @@ function createKinokino(component, _object, prefer_dash) {
         title: extract.title || select_title,
         quality: qualityLabel(fallback),
         info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
-        file: proxUrl(file),
+        file: proxUrl(file, use_mono),
         subtitles: extract.source.cc ? extract.source.cc.map(function (c) {
           var url = fixUrl(c.url || '');
           return {
             label: c.name,
-            url: component.processSubs(proxUrl(url))
+            url: component.processSubs(proxUrl(url, false))
           };
         }) : false,
         audio_tracks: tracks.length ? tracks : false
@@ -537,8 +547,11 @@ function createKinokino(component, _object, prefer_dash) {
           //  - иначе — как настроено в Lampa (по умолчанию системный).
           if (options && options.runas) Lampa.Player.runas(options.runas);
           else if (Lampa.Player.runas) {
-            if (stream_prox && !(Lampa.Platform.is('webos') || Lampa.Platform.is('tizen') || Lampa.Platform.is('orsay'))) Lampa.Player.runas('lampa');
-            else if (Lampa.Platform.is('android')) Lampa.Player.runas('android'); // v8: без живого воркера встроенный плеер на Android бесполезен (CDN блокирует Origin lampa.mx) — играем внешним (VLC)
+            // v9: многоголосый поток умеет только десктопный hls.js; на телефоне и
+            // ТВ играем нативными/внешними плеерами mono-поток
+            if (Lampa.Platform.is('android')) Lampa.Player.runas('android');
+            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas('webos');
+            else if (stream_prox && Lampa.Platform.is('tizen')) Lampa.Player.runas('tizen');
             else Lampa.Player.runas('');
           }
           Lampa.Player.play(first);

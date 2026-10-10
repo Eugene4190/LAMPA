@@ -58,6 +58,8 @@ async function handle(request) {
       return new Response('kinokino worker ok', { headers: ACAO });
     }
 
+    // v9: mono-режим (param/mono=1) — одно потоковое HLS с вшитой дорожкой
+    //     для нативных плееров, не умеющих многоголосый HLS Collapsа.
     // v8: мост Cloudflare->Deno (антибот банит эдж CF кодами 422/424, а сети
     //     РБ/БР не видят deno.net; мост соединяет оба плеча).
     // v7: плееры (VLC, Mi Video, WebView/hls.js) перед запросом могут пере- или
@@ -175,6 +177,13 @@ async function handle(request) {
       if (/mpegurl|mpd|text|json/i.test(ct)) {
         let text = await res.text();
         if (bridged) text = text.split(DENO).join(self + '/');
+        // v9 mono: нативные плееры (VLC, Mi Video, webOS) не умеют многоголосый
+        // HLS Collapsа (читают длительность, но молчат). Убираем внешние
+        // аудиорендеры — в видеосегментах уже вшита дорожка по умолчанию.
+        if (params.mono === '1') {
+          text = text.replace(/^#EXT-X-MEDIA:TYPE=AUDIO[^\n]*\n/gm, '');
+          text = text.replace(/,AUDIO="[^"]*"/g, '');
+        }
         const base = ofLink.substring(0, ofLink.lastIndexOf('/') + 1);
         const abs = (u) => (u.indexOf('http') === 0 ? u : base + u);
         // абсолютные ссылки -> через воркер

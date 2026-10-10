@@ -250,7 +250,7 @@ const INTER = { id: 2, title: 'Интерстеллар', original_title: 'Inter
 
     // имитируем нажатие «играть»
     if (captured.enter) captured.enter({}, {});
-    ok('A: на Android с воркером форсируется встроенный плеер Lampa', captured.runas === 'lampa', 'runas=' + JSON.stringify(captured.runas));
+    ok('A: на Android с воркером играем внешним плеером mono-поток', captured.runas === 'android', 'runas=' + JSON.stringify(captured.runas));
     ok('A: в плеер уехала ссылка через воркер', captured.playData && (captured.playData.url || '').indexOf(normalized) === 0, captured.playData ? (captured.playData.url || '').slice(0, 70) : 'нет play()');
 
     // и что эта ссылка реально играет
@@ -258,7 +258,7 @@ const INTER = { id: 2, title: 'Интерстеллар', original_title: 'Inter
     if (playUrl) {
       const r = await rawGet(playUrl);
       ok('A: воркер отдаёт плейлист по ссылке плеера', r.status === 200 && r.text.indexOf('#EXTM3U') === 0, 'status=' + r.status);
-      ok('A: плейлист переписан на воркер (сегменты не умрут)', r.text.indexOf(WORKER) !== -1 && /#EXT-X-MEDIA:TYPE=AUDIO/.test(r.text), r.text.slice(0, 60));
+      ok('A: mono-плейлист переписан на воркер и без мульти-аудио', r.text.indexOf(WORKER) !== -1 && r.text.indexOf('#EXT-X-MEDIA') === -1, r.text.slice(0, 60));
     } else ok('A: воркер отдаёт плейлист по ссылке плеера', false, 'нет url');
   }
 
