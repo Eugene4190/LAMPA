@@ -1,0 +1,7 @@
+# Netlify: сайт только с Edge-функцией (прокси = тот же kinokino_worker.js).
+# Сборки нет: Edge-функция бандлит файл воркера как есть.
+[build]
+  publish = "."
+
+# Edge-функции Netlify лежат в netlify/edge-functions/ (см. proxy.js).
+# Маршрут «/*» объявлен в самом proxy.js (export const config).

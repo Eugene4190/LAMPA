@@ -18,6 +18,14 @@
  * отдавать ссылки на мёртвые адреса, это 404 -> fragLoadError); самолечение
  * ссылок при ЛЮБОЙ ошибке upstream; журнал последних запросов: GET /debuglog
  * (плееру путь не мешает: нужен именно адрес .../debuglog без enc2).
+ * v12: МОСТ-КОЛЬЦО: антибот источника банит эдж Cloudflare (422/424), поэтому
+ *     воркеру нужен напарник на НЕ-cloudflare ребре (Deno Deploy был таким,
+ *     пока его не приостановили: «Organization suspended / USAGE_EXCEEDED»).
+ *     Теперь мостов может быть несколько (BRIDGES): каждое развёртывание
+ *     этого файла страховало остальные — Deno и Netlify Edge страхуют друг
+ *     друга, CF-воркер без напарника не работоспособен.
+ * v12: честная диагностика: в теле 502 виден ИСХОДНЫЙ код upstream ДО моста
+ *     (раньше мост перезаписывал его своим 503 и причина бана терялась).
  *
  * ДЕПЛОЙ (бесплатно, без копипасты): Cloudflare dashboard → Workers & Pages →
  * Create → Import from GitHub → репозиторий LAMPA (Cloudflare увидит
@@ -29,6 +37,16 @@
  * GitHub repository → LAMPA → Entry point: kinokino_worker.js.)
  */
 const LOG = []; // «чёрный ящик»: последние запросы (для удалённой диагностики)
+
+/* v12: мост-кольцо. Антибот источника (interkh.com) банит эдж Cloudflare
+ * кодами 422/424, но пропускает другие ребра (Deno Deploy, Netlify Edge…).
+ * Перечисли здесь ВСЕ свои развёртывания этого файла, кроме cloudflare-ного:
+ * каждое из них умеет тянуть upstream само и страхует остальные.
+ * Пустые строки игнорируются; свой же адрес исключается автоматически. */
+const BRIDGES = [
+  'https://lampa.eugene4190.deno.net/',  // приостановлен (billing/usage) — оживёт, сам подхватится
+  '', // ← сюда впиши адрес Netlify Edge: 'https://ИМЯ.netlify.app/' (см. fix/INSTRUCTIONS.md)
+].filter(Boolean);
 
 export default {
   async fetch(request) {
@@ -185,19 +203,36 @@ async function handle(request) {
       });
     };
     // v8-мост: антибот источника банит эдж Cloudflare (422/424), но пропускает
-    // Deno; из сетей РБ/БР наоборот виден Cloudflare, но не Deno. При бане эджа
-    // прозрачно пропускаем запрос через запасной Deno-воркер и переписываем
-    // его хост в плейлистах на себя.
-    const DENO = 'https://lampa.eugene4190.deno.net/';
-    const bridge = async (apiPath) => fetch(DENO + apiPath, {
-      headers: { 'User-Agent': UA, 'Accept': '*/*' },
-    });
+    // другие ребра (Deno, Netlify); из сетей РБ/БР наоборот виден Cloudflare,
+    // но не Deno. v12: мостов несколько — пробуем по очереди (кольцо страховки).
+    const bridge = async (apiPath) => {
+      let last = null;
+      for (const b of BRIDGES) {
+        const base = b.endsWith('/') ? b : b + '/';
+        if (base === self + '/') continue; // себя не мостуем
+        try {
+          const r = await fetch(base + apiPath, {
+            headers: { 'User-Agent': UA, 'Accept': '*/*' },
+          });
+          if (r.status < 400) return r;
+          last = r;
+        } catch (e) { last = e; }
+      }
+      if (last && last instanceof Response) return last;
+      throw last || new Error('no bridge configured');
+    };
 
     const serve = async (res, ofLink, bridged) => {
       const ct = res.headers.get('content-type') || 'application/octet-stream';
       if (/mpegurl|mpd|text|json/i.test(ct)) {
         let text = await res.text();
-        if (bridged) text = text.split(DENO).join(self + '/');
+        // v12: плейлист пришёл с моста — в нём ссылки на мост, переписываем на себя
+        if (bridged) {
+          for (const b of BRIDGES) {
+            const base = b.endsWith('/') ? b : b + '/';
+            text = text.split(base).join(self + '/');
+          }
+        }
         // v9 mono: нативные плееры (VLC, Mi Video, webOS) не умеют многоголосый
         // HLS Collapsа (читают длительность, но молчат). Убираем внешние
         // аудиорендеры — в видеосегментах уже вшита дорожка по умолчанию.
@@ -229,6 +264,7 @@ async function handle(request) {
     // 1) обычный запрос
     let res = await upstream(link);
     let via = '';
+    const origStatus = res.status; // v12: запоминаем ИСХОДНЫЙ код до мостов (для диагностики)
 
     // 1.5) антибот банит наш эдж -> уходим мостом через Deno
     if (res.status === 422 || res.status === 424) {
@@ -277,13 +313,17 @@ async function handle(request) {
       u: link.substring(0, 70),
       s: res.status,
       o: (request.headers.get('origin') || '').substring(0, 24),
+      up: origStatus, // v12: исходный код upstream до мостов
     });
     if (LOG.length > 80) LOG.shift();
 
     if (res.status >= 400) {
       let head = '';
       try { head = ((await res.clone().text()) || '').replace(/\s+/g, ' ').substring(0, 140); } catch (e) {}
-      return new Response('upstream ' + res.status + ' | ' + head, { status: 502, headers: ACAO });
+      // v12: честная диагностика: «upstream 422 -> 503 via bridge-last | …» —
+      // видно и бан антибота, и что мост мёртв (а не только последнее звено)
+      const chain = origStatus + (via ? ' -> ' + res.status + ' via ' + via : '');
+      return new Response('upstream ' + chain + ' | ' + head, { status: 502, headers: ACAO });
     }
     return serve(res, link, via !== '');
   }
