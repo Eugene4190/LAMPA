@@ -62,7 +62,14 @@ export default {
       const ct = res.headers.get('content-type') || 'application/octet-stream';
       if (/mpegurl|mpd|text|json/i.test(ct)) {
         let text = await res.text();
+        const base = ofLink.substring(0, ofLink.lastIndexOf('/') + 1);
+        const abs = (u) => (u.indexOf('http') === 0 ? u : base + u);
+        // абсолютные ссылки -> через воркер
         text = text.replace(/https?:\/\/[^\s"',\\)]+/g, (u) => wrap(u));
+        // относительные строки сегментов (не комментарии) -> через воркер
+        text = text.replace(/^((?!#)[^\s:][^\s]*)$/gm, (u) => wrap(abs(u.trim())));
+        // относительные URI= (ключи, аудио-плейлисты) -> через воркер
+        text = text.replace(/URI="((?!http|data:)[^"]+)"/g, (m0, u) => 'URI="' + wrap(abs(u)) + '"');
         return new Response(text, { headers: Object.assign({ 'Content-Type': ct }, ACAO) });
       }
       return new Response(res.body, {
