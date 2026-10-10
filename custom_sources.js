@@ -476,7 +476,11 @@ function createKinokino(component, _object, prefer_dash) {
             },
             timeline: element.timeline,
             title: element.season ? element.title : select_title + (element.title == select_title ? '' : ' / ' + element.title),
-            headers: play_headers
+            headers: play_headers,
+            // сегменты едут через воркер (лишний хоп) — даём hls.js встроенного
+            // плеера запас по таймаутам, чтобы не было fragLoadError на мобильной сети
+            hls_manifest_timeout: 20000,
+            hls_retry_timeout: 60000
           };
 
           if (element.season) {
@@ -489,7 +493,9 @@ function createKinokino(component, _object, prefer_dash) {
                 },
                 timeline: elem.timeline,
                 title: elem.title,
-                headers: play_headers
+                headers: play_headers,
+                hls_manifest_timeout: 20000,
+                hls_retry_timeout: 60000
               });
             });
           } else {

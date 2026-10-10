@@ -8,6 +8,9 @@
  *         новые токены для того же сегмента («самолечение»).
  * Плюс отдаёт CORS (*) и переписывает все ссылки внутри плейлистов сам на себя,
  * чтобы сегменты тоже шли через прокси.
+ * v3: «распутывание» матрёшки — если CDN-кэш отдаёт плейлист со ссылками уже
+ * на этот воркер (двойная обёртка -> fragLoadError у плеера), воркер спускается
+ * к исходной ссылке и больше не оборачивает собственные ссылки.
  *
  * ДЕПЛОЙ (10 минут, бесплатно): deno.com/deploy → Sign in with GitHub →
  * New Project → Deploy from GitHub repository → выбрать LAMPA →
@@ -45,8 +48,29 @@ export default {
     let link = rest;
     if (!link) return new Response('bad link', { status: 400, headers: ACAO });
 
+    // «Распутывание»: CDN-«оригин» умеет отдавать плейлисты, в которые уже
+    // закешированы ссылки на этот же воркер (ссылки оказываются обёрнуты
+    // дважды-трижды, и плеер получает текст плейлиста вместо видео —
+    // fragLoadError). Если внутрь меты попала ссылка на нас самих —
+    // спускаемся к исходной, сколько бы слоёв ни было.
+    const selfPrefix = self + '/enc2/';
+    const unwrap = (u) => {
+      if (u.indexOf(selfPrefix) !== 0) return u;
+      try {
+        let m = atob(decodeURIComponent(u.substring(selfPrefix.length).split('/')[0]));
+        while (m.indexOf('param/') === 0) {
+          const p = m.indexOf('/', 6);
+          m = p === -1 ? '' : m.substring(p + 1);
+        }
+        return m || u;
+      } catch (e) { return u; }
+    };
+    for (let g = 0; g < 6 && link.indexOf(selfPrefix) === 0; g++) link = unwrap(link);
+
     const UA = params['User-Agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
     const wrap = (u) => {
+      // ссылки на нас самих НЕ переоборачиваем (иначе растёт матрёшка)
+      if (u.indexOf(selfPrefix) === 0) return u;
       let m = 'param/User-Agent=' + encodeURIComponent(UA) + '/';
       if (params.Src) m += 'param/Src=' + encodeURIComponent(params.Src) + '/';
       return self + '/enc2/' + encodeURIComponent(btoa(m + u)) + '/seg';
