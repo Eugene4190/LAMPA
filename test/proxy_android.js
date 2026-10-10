@@ -19,7 +19,7 @@ const vm = require('vm');
 const https = require('https');
 
 const FILE = process.argv[2] || path.join(__dirname, '..', 'dist', 'online_mod.js');
-const WORKER = process.env.WORKER_URL || 'https://festive-kestrel-8533.eugene4190.deno.net';
+const WORKER = process.env.WORKER_URL || 'https://graceful-gannet-9372.eugene4190.deno.net';
 const DEAD_WORKER = 'https://kinokino-worker-dead-9999.deno.net';
 const code = fs.readFileSync(FILE, 'utf8');
 const UA = 'Mozilla/5.0 (Linux; Android 13; M2012K11AG) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
