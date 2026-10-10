@@ -39,7 +39,7 @@ function depth(u) {
   const tmp = path.join(require('os').tmpdir(), 'worker_under_test.mjs');
   fs.copyFileSync(WORKER_FILE, tmp);
   const worker = (await import(tmp)).default;
-  const call = async (url) => worker.fetch({ method: 'GET', url });
+  const call = async (url) => worker.fetch({ method: 'GET', url, headers: { get: () => null } });
 
   let r = await call(LIVE.replace(/\/$/, '') + '/');
   ok('воркер отвечает на корне', r.status === 200 && /worker ok/.test(await r.text()), 'status=' + r.status);
@@ -71,6 +71,23 @@ function depth(u) {
   r = await call(u);
   body = Buffer.from(await r.arrayBuffer());
   ok('матрёшка x3 распутывается до TS-видео', r.status === 200 && body[0] === 0x47, `status=${r.status} байт=${body.length}`);
+
+  // v4: обёртка МЁРТВОГО воркера (как в отравленном кэше CDN) распутывается до видео
+  let orig = segs[0];
+  while (orig.indexOf('/enc2/') !== -1) {
+    let m = atob(decodeURIComponent(orig.substring(orig.indexOf('/enc2/') + 6).split('/')[0]));
+    while (m.indexOf('param/') === 0) { const p = m.indexOf('/', 6); m = p === -1 ? '' : m.substring(p + 1); }
+    orig = m;
+  }
+  const DEAD = 'https://festive-kestrel-8533.eugene4190.deno.net/';
+  const poisoned = DEAD + 'enc2/' + b64u(meta + orig) + '/seg';
+  r = await call(poisoned);
+  body = Buffer.from(await r.arrayBuffer());
+  ok('v4: ссылка на мёртвый воркер распутывается до TS-видео', r.status === 200 && body[0] === 0x47, `status=${r.status} байт=${body.length}`);
+
+  r = await call(LIVE.replace(/\/$/, '') + '/debuglog');
+  const logtxt = await r.text();
+  ok('v4: журнал /debuglog отдаётся', r.status === 200 && logtxt.trim().startsWith('['), logtxt.slice(0, 30));
 
   console.log('');
   let failed = 0;

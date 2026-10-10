@@ -9,8 +9,12 @@
  * Плюс отдаёт CORS (*) и переписывает все ссылки внутри плейлистов сам на себя,
  * чтобы сегменты тоже шли через прокси.
  * v3: «распутывание» матрёшки — если CDN-кэш отдаёт плейлист со ссылками уже
- * на этот воркер (двойная обёртка -> fragLoadError у плеера), воркер спускается
+ * на воркер (двойная обёртка -> fragLoadError у плеера), воркер спускается
  * к исходной ссылке и больше не оборачивает собственные ссылки.
+ * v4: распутывает обёртки ЛЮБОГО воркера (включая удалённые — кэш CDN умеет
+ * отдавать ссылки на мёртвые адреса, это 404 -> fragLoadError); самолечение
+ * ссылок при ЛЮБОЙ ошибке upstream; журнал последних запросов: GET /debuglog
+ * (плееру путь не мешает: нужен именно адрес .../debuglog без enc2).
  *
  * ДЕПЛОЙ (10 минут, бесплатно): deno.com/deploy → Sign in with GitHub →
  * New Project → Deploy from GitHub repository → выбрать LAMPA →
@@ -19,6 +23,8 @@
  * «Использовать альтернативный прокси» + адрес в поле «Альтернативный прокси».
  * (Работает и на Cloudflare Workers тем же кодом, если захочется.)
  */
+const LOG = []; // «чёрный ящик»: последние запросы (для удалённой диагностики)
+
 export default {
   async fetch(request) {
     const ACAO = {
@@ -31,6 +37,9 @@ export default {
     const url = new URL(request.url);
     const self = url.origin;
     let api = url.href.substring(self.length + 1);
+    if (api === 'debuglog') {
+      return new Response(JSON.stringify(LOG, null, 1), { headers: ACAO });
+    }
     if (!api.startsWith('enc2/')) {
       return new Response('kinokino worker ok', { headers: ACAO });
     }
@@ -48,16 +57,16 @@ export default {
     let link = rest;
     if (!link) return new Response('bad link', { status: 400, headers: ACAO });
 
-    // «Распутывание»: CDN-«оригин» умеет отдавать плейлисты, в которые уже
-    // закешированы ссылки на этот же воркер (ссылки оказываются обёрнуты
-    // дважды-трижды, и плеер получает текст плейлиста вместо видео —
-    // fragLoadError). Если внутрь меты попала ссылка на нас самих —
-    // спускаемся к исходной, сколько бы слоёв ни было.
+    // «Распутывание» матрёшки ЛЮБОГО воркера (v4): CDN-кэш источника умеет
+    // отдавать плейлисты, в которые закешированы обёрнутые ссылки — в том числе
+    // на УДАЛЁННЫЕ воркеры (festive-kestrel и т.п.). Такая ссылка даёт 404/502
+    // и fragLoadError у плеера. Спускаемся к исходной ссылке по всем слоям,
+    // чей хост содержит /enc2/.
     const selfPrefix = self + '/enc2/';
-    const unwrap = (u) => {
-      if (u.indexOf(selfPrefix) !== 0) return u;
+    const ANY_ENC = /^https?:\/\/[^/]+\/enc2\//;
+    const unwrapOne = (u) => {
       try {
-        let m = atob(decodeURIComponent(u.substring(selfPrefix.length).split('/')[0]));
+        let m = atob(decodeURIComponent(u.substring(u.indexOf('/enc2/') + 6).split('/')[0]));
         while (m.indexOf('param/') === 0) {
           const p = m.indexOf('/', 6);
           m = p === -1 ? '' : m.substring(p + 1);
@@ -65,15 +74,23 @@ export default {
         return m || u;
       } catch (e) { return u; }
     };
-    for (let g = 0; g < 6 && link.indexOf(selfPrefix) === 0; g++) link = unwrap(link);
+    const unwrap = (u) => {
+      for (let g = 0; g < 8 && ANY_ENC.test(u); g++) {
+        const inner = unwrapOne(u);
+        if (inner === u) break;
+        u = inner;
+      }
+      return u;
+    };
+    link = unwrap(link);
 
     const UA = params['User-Agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
     const wrap = (u) => {
-      // ссылки на нас самих НЕ переоборачиваем (иначе растёт матрёшка)
-      if (u.indexOf(selfPrefix) === 0) return u;
+      const clean = unwrap(u); // снимает и наши, и чужие/мёртвые обёртки
+      if (clean.indexOf(selfPrefix) === 0) return clean;
       let m = 'param/User-Agent=' + encodeURIComponent(UA) + '/';
       if (params.Src) m += 'param/Src=' + encodeURIComponent(params.Src) + '/';
-      return self + '/enc2/' + encodeURIComponent(btoa(m + u)) + '/seg';
+      return self + '/enc2/' + encodeURIComponent(btoa(m + clean)) + '/seg';
     };
     const upstream = async (u, ref) => {
       const t = new URL(u);
@@ -94,7 +111,7 @@ export default {
         text = text.replace(/^((?!#)[^\s:][^\s]*)$/gm, (u) => wrap(abs(u.trim())));
         // относительные URI= (ключи, аудио-плейлисты) -> через воркер
         text = text.replace(/URI="((?!http|data:)[^"]+)"/g, (m0, u) => 'URI="' + wrap(abs(u)) + '"');
-        return new Response(text, { headers: Object.assign({ 'Content-Type': ct }, ACAO) });
+        return new Response(text, { headers: Object.assign({ 'Content-Type': ct, 'Cache-Control': 'no-store' }, ACAO) });
       }
       return new Response(res.body, {
         status: res.status,
@@ -105,8 +122,9 @@ export default {
     // 1) обычный запрос
     let res = await upstream(link);
 
-    // 2) «самолечение»: 410/403 -> свежий embed -> свежие токены для того же сегмента
-    if ((res.status === 410 || res.status === 403) && params.Src) {
+    // 2) «самолечение»: любая ошибка (410/403/404/423/5xx) -> свежий embed ->
+    //    свежие токены для того же сегмента
+    if (res.status >= 400 && params.Src) {
       try {
         const emb = await upstream(params.Src, 'https://fixtyflux.cfd/');
         const html = await emb.text();
@@ -132,6 +150,14 @@ export default {
         }
       } catch (e) { /* остаёмся на исходном ответе */ }
     }
+
+    LOG.push({
+      t: new Date().toISOString().substring(11, 19),
+      u: link.substring(0, 70),
+      s: res.status,
+      o: (request.headers.get('origin') || '').substring(0, 24),
+    });
+    if (LOG.length > 80) LOG.shift();
 
     if (res.status >= 400) {
       return new Response('upstream ' + res.status, { status: 502, headers: ACAO });
