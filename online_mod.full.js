@@ -582,6 +582,10 @@ function createKinokino(component, _object, prefer_dash) {
                 var vurl = pick(mtxt);
                 if (vurl.indexOf('http') !== 0) vurl = '';
                 if (!vurl) {
+                  if ((mtxt || '').indexOf('<MPD') !== -1 || (mtxt || '').indexOf('<?xml') === 0) {
+                    Lampa.Noty.show('DIAG ' + mark + ' mpd (DASH) ' + (mtxt || '').length);
+                    return;
+                  }
                   Lampa.Noty.show('DIAG ' + mark + ' master? ' + (mtxt || '').length + '|' + (mtxt || '').replace(/\n/g, ' ').substring(0, 20));
                   return;
                 }
@@ -633,7 +637,7 @@ function createKinokino(component, _object, prefer_dash) {
             // v9: многоголосый поток умеет только десктопный hls.js; на телефоне и
             // ТВ играем нативными/внешними плеерами mono-поток
             if (Lampa.Platform.is('android')) Lampa.Player.runas('android');
-            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas('lampa'); // v11: на webOS играем встроенным плеером Lampa (парсер+нативное видео), родной «Фото и видео» поток не берёт
+            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas(prefer_dash ? 'webos' : 'lampa'); // v11: HLS — встроенным плеером Lampa; v12: DASH(1080p) — родным плеером webOS, он умеет MPD и с воркером v11 (Range) наконец стартует
             else if (stream_prox && Lampa.Platform.is('tizen')) Lampa.Player.runas('tizen');
             else Lampa.Player.runas('');
           }
