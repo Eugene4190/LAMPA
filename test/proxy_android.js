@@ -198,6 +198,8 @@ sandbox.document = new Proxy({
 });
 process.on('uncaughtException', (e) => { console.log('  (фоновый таймер плагина: ' + e.message + ')'); });
 sandbox.navigator = { userAgent: UA };
+// в настоящей Lampa dash.js лежит в vender/dash/dash.js и поднимается на .mpd
+sandbox.dashjs = { MediaPlayer: function () { return { create: function () { return {}; } }; } };
 sandbox.globalThis = sandbox;
 sandbox.self = sandbox;
 vm.createContext(sandbox);
@@ -325,6 +327,19 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
       } else ok('B: init-сегмент DASH приезжает через воркер', false, 'нет BaseURL/initialization');
     } else ok('B: воркер отдаёт mpd', false, 'нет url');
   }
+
+  /* ── D. нет dash.js (старая Lampa) → откат mpd на HLS со звуком ── */
+  const savedDash = sandbox.dashjs;
+  delete sandbox.dashjs;
+  item = await runCard(OPPEN, 'D. DASH-балансер, но dash.js не подгрузился', 'kinokino_dash');
+  ok('D: список построен', !!item);
+  if (item) {
+    if (captured.enter) captured.enter({}, {});
+    const u = (captured.playData && captured.playData.url) || '';
+    ok('D: вместо mpd в плеер ушёл HLS (иначе чёрный экран)', /master\.m3u8/.test(u) && u.indexOf(WORKER + '/enc2/') === 0, u.slice(-46));
+    ok('D: пользователю объяснили откат', /dash\.js/.test(captured.noty || ''), (captured.noty || '').slice(0, 60));
+  }
+  sandbox.dashjs = savedDash;
 
   /* ── C. мёртвый воркер → откат на прямые ссылки ── */
   store.online_mod_proxy_other_url = DEAD_WORKER;

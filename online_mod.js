@@ -633,6 +633,18 @@ function createKinokino(component, _object, prefer_dash) {
           var url_now = play_file(element) || '';
           var mpd_now = /\.mpd/i.test(url_now);
           var native_dash = mpd_now && tv_native && !no_mse;
+
+          /* v15: mpd во встроенном плеере играет dash.js (Lampa возит его в
+           * vender/dash/dash.js, а при запуске с file:// подгружает с GitHub).
+           * Если в этой Lampa dash.js не подгрузился, mpd не сыграет никто —
+           * чёрный экран. Тихо уходим на HLS-версию того же потока: там 720p,
+           * зато гарантированно со звуком и озвучками. */
+          if (!alt_on && mpd_now && !native_dash && element.alt_file && typeof dashjs === 'undefined') {
+            Lampa.Noty.show('KinoKino: в этой Lampa нет dash.js — включаю HLS со звуком (до 720p)');
+            do_play(true);
+            return;
+          }
+
           var first = {
             url: component.getDefaultQuality(null, play_file(element)),
             subtitles: element.subtitles,
