@@ -19,12 +19,14 @@
  * ссылок при ЛЮБОЙ ошибке upstream; журнал последних запросов: GET /debuglog
  * (плееру путь не мешает: нужен именно адрес .../debuglog без enc2).
  *
- * ДЕПЛОЙ (10 минут, бесплатно): deno.com/deploy → Sign in with GitHub →
- * New Project → Deploy from GitHub repository → выбрать LAMPA →
- * Entry point: kinokino_worker.js → Deploy. Скопировать адрес вида
- * https://имя-xxx.deno.dev/ и вписать в Lampa: Настройки → Онлайн Мод (my) →
- * «Использовать альтернативный прокси» + адрес в поле «Альтернативный прокси».
- * (Работает и на Cloudflare Workers тем же кодом, если захочется.)
+ * ДЕПЛОЙ (бесплатно, без копипасты): Cloudflare dashboard → Workers & Pages →
+ * Create → Import from GitHub → репозиторий LAMPA (Cloudflare увидит
+ * wrangler.toml и точку входа) → Deploy. Адрес вида
+ * https://kinokino-xxx.workers.dev вписать в Lampa: Настройки →
+ * Онлайн Мод (my) → «Использовать альтернативный прокси» + «Альтернативный
+ * прокси». Обновляется сам при каждом пуше в main.
+ * (Код совместим и с Deno Deploy тем же файлом: deno.com/deploy → Deploy from
+ * GitHub repository → LAMPA → Entry point: kinokino_worker.js.)
  */
 const LOG = []; // «чёрный ящик»: последние запросы (для удалённой диагностики)
 

@@ -1,0 +1,7 @@
+# Конфиг для деплоя воркера на Cloudflare Workers прямо из этого репозитория:
+# Cloudflare dashboard -> Workers & Pages -> Create -> Import from GitHub ->
+# выбрать LAMPA -> Cloudflare увидит этот файл и точку входа -> Deploy.
+# Дальше воркер обновляется сам при каждом пуше в main.
+name = "kinokino"
+main = "kinokino_worker.js"
+compatibility_date = "2024-09-01"
