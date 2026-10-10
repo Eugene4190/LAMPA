@@ -558,6 +558,7 @@ function createKinokino(component, _object, prefer_dash) {
           if (options && options.runas) Lampa.Player.runas(options.runas);
           else if (Lampa.Player.runas) {
             if (stream_prox && !(Lampa.Platform.is('webos') || Lampa.Platform.is('tizen') || Lampa.Platform.is('orsay'))) Lampa.Player.runas('lampa');
+            else if (Lampa.Platform.is('android')) Lampa.Player.runas('android'); // v8: без живого воркера встроенный плеер на Android бесполезен (CDN блокирует Origin lampa.mx) — играем внешним (VLC)
             else Lampa.Player.runas('');
           }
           Lampa.Player.play(first);

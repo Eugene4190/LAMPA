@@ -276,7 +276,7 @@ const INTER = { id: 2, title: 'Интерстеллар', original_title: 'Inter
   if (item) {
     ok('C: откат на прямые ссылки (без /enc2/)', /^https:\/\/(?!kinokino-worker-dead)/.test(item.file || '') && (item.file || '').indexOf('/enc2/') === -1, (item.file || '').slice(0, 80));
     if (captured.enter) captured.enter({}, {});
-    ok('C: системный плеер не форсируется во встроенный', captured.runas === '', 'runas=' + JSON.stringify(captured.runas));
+    ok('C: без живого воркера на Android играем внешним плеером (не встроенным)', captured.runas === 'android', 'runas=' + JSON.stringify(captured.runas));
   }
 
   report();
