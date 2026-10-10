@@ -170,7 +170,7 @@ if (!loadError) {
   ok('карточка фильма открывается без ошибок', !createError, createError ? (createError.message + ' | ' + (createError.stack || '').split('\n')[1]) : '');
 
   const sort = (captured.filterSort || []).map((s) => s.title);
-  const exp = expected || ['HDrezka', 'CDNVideoHub', 'Kodik', 'KinoKino'];
+  const exp = expected || ['HDrezka', 'CDNVideoHub', 'Kodik', 'KinoKino', 'KinoKino (DASH)'];
   ok('список балансеров = ' + exp.join(' + '), JSON.stringify(sort) === JSON.stringify(exp), 'получено: ' + (sort.join(', ') || '—'));
 
   // настройки: не осталось пунктов удалённых источников

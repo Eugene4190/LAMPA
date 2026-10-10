@@ -40,6 +40,7 @@ const CONFIG = {
   // (фабрика подставится автоматически по имени класса из custom_sources.js)
   EXTRA_SOURCES: [
     { name: 'kinokino', title: 'KinoKino', search: false, kp: true, imdb: true },
+    { name: 'kinokino_dash', title: 'KinoKino (DASH)', search: false, kp: true, imdb: true },
   ],
 
   // true  -> физически вырезать из файла код неиспользуемых источников (565 КБ -> ~185 КБ)

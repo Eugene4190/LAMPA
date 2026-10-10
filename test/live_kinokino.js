@@ -175,7 +175,8 @@ function waitFor(cond, ms) {
   });
 }
 
-async function runCard(movie, label) {
+async function runCard(movie, label, balanser) {
+  store.online_mod_balanser = balanser || 'kinokino';
   captured.items = [];
   captured.netCalls = [];
   captured.filterItems = null;
@@ -226,6 +227,13 @@ async function runCard(movie, label) {
   const serItem = captured.items[0] || {};
   ok('сериал: найден и есть ссылка', serOk && !!serItem.file, serOk ? '' : 'пусто');
   ok('сериал: пункты с сезонами/эпизодами', !!serItem.season && !!serItem.episode, `s${serItem.season}e${serItem.episode}`);
+  ok('фильм+сериал: честная метка качества (не 480p из кривой карты)', /\d+p/.test(filmItem.quality || '') && filmItem.quality !== '480p', filmItem.quality);
+
+  const dashOk = await runCard(
+    { id: 1, title: 'Обитель зла', original_title: 'Resident Evil', number_of_seasons: 0, kinopoisk_id: 7378605, imdb_id: '' },
+    'ФИЛЬМ DASH', 'kinokino_dash');
+  const dashItem = captured.items[0] || {};
+  ok('DASH-балансер: ссылка .mpd или fallback .m3u8', /\.(mpd|m3u8)/.test(dashItem.file || ''), (dashItem.file || '').slice(0, 70));
 
   report();
   process.exit(results.some((r) => !r.pass) ? 1 : 0);

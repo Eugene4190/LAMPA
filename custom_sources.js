@@ -3,7 +3,9 @@
 // Шаблон класса и описание контракта — в README.md, раздел «Свой источник».
 
 /*
- * KinoKino — источник по мотивам сайта kinokino.win (Flicksbar).
+ * KinoKino — источник по мотивам сайта kinokino.win (Flicksbar). Два балансера:
+ *   KinoKino         — HLS (играет везде),
+ *   KinoKino (DASH)  — DASH 1080p (где он есть; на старых ТВ может не потянуть).
  *
  * Как работает:
  *   1. Запрашивает API сайта: https://fbphdplay.top/api/players?kinopoisk={kp_id}
@@ -13,19 +15,31 @@
  *      и скачивает его HTML: там вызов makePlayer({...}) с файлами.
  *   3. Если через сайт не вышло — запасные зеркала Collaps напрямую по ID:
  *      api.ortified.ws/embed/kp/{id} и api.kinogram.best/embed/kp/{id}.
- *   4. Разбор makePlayer, фильтры сезонов, аудиодорожки (переводы внутри файла),
- *      субтитры — по образцу авторского класса collaps.
+ *   4. Качество подписывается ЧЕСТНО: один раз скачивается master.m3u8 (или .mpd
+ *      для DASH) и берётся максимальная реальная высота кадра (у Collaps в JSON
+ *      лежит кривая карта qualityByWidth, она занижает качество).
+ *   5. Переводы у Collaps — это аудиодорожки ВНУТРИ одного потока (master
+ *      multi-audio), поэтому список = одна строка на фильм, а перевод
+ *      переключается в плеере кнопкой аудиодорожек. Субтитры RU/EN/UK — там же.
+ *   6. Сериалы: фильтр сезонов, серии списком.
  *
- * Контент: фильмы и сериалы, переводы те же, что на сайте
- * (Dragon Money Studio, Укр. Дуб, Kaz.MVO, Uzb.Dub и т.д.), качество до 720p (HLS).
  * Поиск только по ID КиноПоиска/IMDB (по названию API сайта не умеет) —
  * поэтому в CONFIG.EXTRA_SOURCES стоит search:false, kp:true, imdb:true.
  */
-function kinokino(component, _object) {
+function kinokino(component, object) {
+  createKinokino.call(this, component, object, false);
+}
+
+function kinokino_dash(component, object) {
+  createKinokino.call(this, component, object, true);
+}
+
+function createKinokino(component, _object, prefer_dash) {
   var network = new Lampa.Reguest();
   var extract = {};
   var object = _object;
   var select_title = '';
+  var detected_height = 0;
   var prefer_http = Lampa.Storage.field('online_mod_prefer_http') === true;
 
   var API = 'https://fbphdplay.top/api/players';
@@ -34,11 +48,15 @@ function kinokino(component, _object) {
   var user_agent = Utils.baseUserAgent();
   var prox = component.proxy('collaps');
   var prox_enc = '';
-  var prox_enc_stream = '';
+
+  // свой прокси (Настройки → Онлайн Мод (my) → «свой прокси»): нужен на webOS/Tizen,
+  // где CDN Collaps отдаёт 503 на User-Agent телевизора — воркер подменит UA
+  var DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  var stream_prox = Lampa.Storage.field('online_mod_proxy_other') === true ? (Lampa.Storage.field('online_mod_proxy_other_url') + '' || '') : '';
+  var stream_prox_enc = stream_prox ? 'param/User-Agent=' + encodeURIComponent(DESKTOP_UA) + '/' : '';
 
   if (prox) {
     prox_enc += 'param/User-Agent=' + encodeURIComponent(user_agent) + '/';
-    prox_enc_stream = prox_enc;
   }
 
   var play_headers = !prox && Lampa.Platform.is('android') ? {
@@ -58,6 +76,45 @@ function kinokino(component, _object) {
     }
 
     return component.fixLinkProtocol(url, prefer_http, true);
+  }
+
+  function pickFile(src) {
+    if (!src) return '';
+    return (prefer_dash && (src.dasha || src.dash)) || src.hls || '';
+  }
+
+  /* ── честная метка качества: смотрим реальный мастер-плейлист ── */
+  function probeQuality(url, onDone) {
+    if (!url) {
+      onDone(0);
+      return;
+    }
+
+    network.clear();
+    network.timeout(8000);
+    network.native(component.proxyLink(url, stream_prox, stream_prox_enc, 'enc2'), function (str) {
+      var h = 0;
+      var re = prefer_dash ? /height="(\d+)"/g : /RESOLUTION=\d+x(\d+)/g;
+      var m;
+      str = str || '';
+
+      while ((m = re.exec(str))) {
+        var v = parseInt(m[1]);
+        if (v > h) h = v;
+      }
+
+      onDone(h);
+    }, function () {
+      onDone(0);
+    }, false, {
+      dataType: 'text',
+      headers: play_headers
+    });
+  }
+
+  function qualityLabel(fallback) {
+    if (detected_height) return detected_height + 'p';
+    return '360p ~ ' + fallback;
   }
 
   /* ── шаг 1: API сайта (ищем iframe плеера Collaps) ───────────── */
@@ -133,6 +190,7 @@ function kinokino(component, _object) {
 
     if (json && (json.playlist || json.source)) {
       extract = json;
+      detected_height = 0;
 
       if (extract.playlist && extract.playlist.seasons) {
         extract.playlist.seasons.sort(function (a, b) {
@@ -140,8 +198,19 @@ function kinokino(component, _object) {
         });
       }
 
-      filter();
-      append(filtred());
+      var probe_url = '';
+
+      if (extract.source) {
+        probe_url = pickFile(extract.source);
+      } else if (extract.playlist && extract.playlist.seasons.length && extract.playlist.seasons[0].episodes && extract.playlist.seasons[0].episodes.length) {
+        probe_url = pickFile(extract.playlist.seasons[0].episodes[0]);
+      }
+
+      probeQuality(probe_url, function (h) {
+        detected_height = h;
+        filter();
+        append(filtred());
+      });
     } else component.emptyForQuery(select_title);
   }
 
@@ -184,6 +253,7 @@ function kinokino(component, _object) {
 
   function filtred() {
     var filtred = [];
+    var fallback = prefer_dash ? '1080p' : '720p';
 
     if (extract.playlist) {
       extract.playlist.seasons.forEach(function (season, i) {
@@ -195,19 +265,19 @@ function kinokino(component, _object) {
                 language: name
               };
             });
-            var file = fixUrl(episode.hls || '', true);
+            var file = fixUrl(pickFile(episode), true);
             filtred.push({
               title: episode.title,
-              quality: '360p ~ 720p',
+              quality: qualityLabel(fallback),
               info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
               season: season.season,
               episode: parseInt(episode.episode),
-              file: component.proxyLink(file, prox, prox_enc_stream),
+              file: component.proxyLink(file, stream_prox, stream_prox_enc, 'enc2'),
               subtitles: episode.cc ? episode.cc.map(function (c) {
                 var url = fixUrl(c.url || '');
                 return {
                   label: c.name,
-                  url: component.processSubs(component.proxyLink(url, prox, prox_enc_stream))
+                  url: component.processSubs(component.proxyLink(url, stream_prox, stream_prox_enc, 'enc2'))
                 };
               }) : false,
               audio_tracks: tracks.length ? tracks : false
@@ -216,30 +286,23 @@ function kinokino(component, _object) {
         }
       });
     } else if (extract.source) {
-      var max_quality = 0;
-      extract.qualityByWidth && Lampa.Arrays.getKeys(extract.qualityByWidth).forEach(function (resolution) {
-        var quality = extract.qualityByWidth[resolution] || 0;
-        if (quality > 720) quality = 0;
-        if (quality > max_quality) max_quality = quality;
-      });
-
       var names = audioNames(extract.source.audio);
       var tracks = names.map(function (name) {
         return {
           language: name
         };
       });
-      var file = fixUrl(extract.source.hls || '', true);
+      var file = fixUrl(pickFile(extract.source), true);
       filtred.push({
         title: extract.title || select_title,
-        quality: max_quality ? max_quality + 'p' : '360p ~ 720p',
+        quality: qualityLabel(fallback),
         info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
-        file: component.proxyLink(file, prox, prox_enc_stream),
+        file: component.proxyLink(file, stream_prox, stream_prox_enc, 'enc2'),
         subtitles: extract.source.cc ? extract.source.cc.map(function (c) {
           var url = fixUrl(c.url || '');
           return {
             label: c.name,
-            url: component.processSubs(component.proxyLink(url, prox, prox_enc_stream))
+            url: component.processSubs(component.proxyLink(url, stream_prox, stream_prox_enc, 'enc2'))
           };
         }) : false,
         audio_tracks: tracks.length ? tracks : false
