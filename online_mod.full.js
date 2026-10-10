@@ -80,7 +80,9 @@ function createKinokino(component, _object, prefer_dash) {
   }
 
   var play_headers = !prox && Lampa.Platform.is('android') ? {
-    'User-Agent': user_agent
+    'User-Agent': user_agent,
+    'Origin': 'https://api.nextembed.ws',
+    'Referer': 'https://api.nextembed.ws/'
   } : {};
   var filter_items = {};
   var choice = {
@@ -383,7 +385,10 @@ function createKinokino(component, _object, prefer_dash) {
           }
 
           if (playlist.length > 1) first.playlist = playlist;
+          // на Android системные плееры (Mi Video и т.п.) не умеют multi-audio HLS
+          // и DASH — играем встроенным плеером Lampa
           if (options && options.runas) Lampa.Player.runas(options.runas);
+          else if (Lampa.Platform.is('android')) Lampa.Player.runas('lampa');
           Lampa.Player.play(first);
           Lampa.Player.playlist(playlist);
 
