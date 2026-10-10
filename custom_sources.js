@@ -153,7 +153,9 @@ function createKinokino(component, _object, prefer_dash) {
   // а на Android с включённым прокси мы форсируем именно встроенный —
   // поэтому там DASH-балансер честно отдаёт HLS-поток
   function dashActive() {
-    return prefer_dash && !(stream_prox && Lampa.Platform.is('android'));
+    // v13: DASH(1080p) остаётся только там, где его есть чем играть (десктоп);
+    // на android/webos/tizen отдаём HLS — нативные и встроенный плееры MPD не тянут
+    return prefer_dash && !use_mono;
   }
 
   function pickFile(src) {
@@ -617,7 +619,7 @@ function createKinokino(component, _object, prefer_dash) {
             // v9: многоголосый поток умеет только десктопный hls.js; на телефоне и
             // ТВ играем нативными/внешними плеерами mono-поток
             if (Lampa.Platform.is('android')) Lampa.Player.runas('android');
-            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas(prefer_dash ? 'webos' : 'lampa'); // v11: HLS — встроенным плеером Lampa; v12: DASH(1080p) — родным плеером webOS, он умеет MPD и с воркером v11 (Range) наконец стартует
+            else if (stream_prox && Lampa.Platform.is('webos')) Lampa.Player.runas('lampa'); // v13: на webOS всегда встроенный плеер Lampa (родной «Фото и видео» поток не берёт); DASH-балансер на ТВ/телефоне честно отдаёт HLS
             else if (stream_prox && Lampa.Platform.is('tizen')) Lampa.Player.runas('tizen');
             else Lampa.Player.runas('');
           }
