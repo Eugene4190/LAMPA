@@ -330,15 +330,25 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
 
   /* ── D. нет dash.js (старая Lampa) → откат mpd на HLS со звуком ── */
   const savedDash = sandbox.dashjs;
+  const savedCreate = sandbox.document.createElement;
   delete sandbox.dashjs;
+  // CDN-подгрузка dash.js в песочнице «падает» мгновенно, как на телефоне без сети
+  sandbox.document.createElement = () => {
+    const o = { src: '', onload: null, onerror: null };
+    setTimeout(() => { if (o.onerror) o.onerror(); }, 5);
+    return o;
+  };
   item = await runCard(OPPEN, 'D. DASH-балансер, но dash.js не подгрузился', 'kinokino_dash');
   ok('D: список построен', !!item);
   if (item) {
     if (captured.enter) captured.enter({}, {});
+    // откат на HLS происходит асинхронно (пока dash.js «не загрузится»)
+    await waitFor(() => !!captured.playData, 8000);
     const u = (captured.playData && captured.playData.url) || '';
     ok('D: вместо mpd в плеер ушёл HLS (иначе чёрный экран)', /master\.m3u8/.test(u) && u.indexOf(WORKER + '/enc2/') === 0, u.slice(-46));
     ok('D: пользователю объяснили откат', /dash\.js/.test(captured.noty || ''), (captured.noty || '').slice(0, 60));
   }
+  sandbox.document.createElement = savedCreate;
   sandbox.dashjs = savedDash;
 
   /* ── C. мёртвый воркер → откат на прямые ссылки ── */

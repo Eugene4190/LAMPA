@@ -214,17 +214,17 @@ function createKinokino(component, _object, prefer_dash) {
   }
 
   /* ── честная метка качества: смотрим реальный мастер-плейлист ── */
-  function probeQuality(url, onDone) {
+  function probeQuality(url, onDone, force_hls) {
     if (!url) {
       onDone(0, true);
       return;
     }
 
     network.clear();
-    network.timeout(8000);
+    network.timeout(force_hls ? 8000 : (dashActive() ? 15000 : 8000));
     network.native(proxUrl(url, use_mono), function (str) {
       var h = 0;
-      var re = dashActive() ? /height="(\d+)"/g : /RESOLUTION=\d+x(\d+)/g;
+      var re = (force_hls || !dashActive()) ? /RESOLUTION=\d+x(\d+)/g : /height="(\d+)"/g;
       var m;
       str = str || '';
 
@@ -235,7 +235,7 @@ function createKinokino(component, _object, prefer_dash) {
 
       // v15: заодно запоминаем максимальный битрейт потока (кбит/с) — он нужен,
       // чтобы dash.js во встроенном плеере стартовал не с 486p (см. seedDashBitrate)
-      if (dashActive()) {
+      if (dashActive() && !force_hls) {
         var rb = /bandwidth="(\d+)"/g;
         var b;
         detected_bitrate = 0;
@@ -283,6 +283,51 @@ function createKinokino(component, _object, prefer_dash) {
       dataType: 'text',
       headers: play_headers
     });
+  }
+
+  /* ── v15.2: dash.js может отсутствовать в конкретной сборке Lampa ────────
+   * Lampa поднимает dashjs из vender/dash/dash.js (а при запуске с file:// —
+   * с GitHub). Мод-сборки и старые APK могут его не возить, тогда mpd играть
+   * нечем и оставалось бы только 720p HLS. Догружаем dash.js с CDN один раз
+   * и только когда он реально понадобился; не загрузился — HLS со звуком. */
+  var dashjs_loading = false;
+  var dashjs_waiters = [];
+
+  function ensureDashJs(onDone) {
+    if (typeof dashjs !== 'undefined') {
+      onDone(true);
+      return;
+    }
+
+    dashjs_waiters.push(onDone);
+    if (dashjs_loading) return;
+    dashjs_loading = true;
+
+    var done = function (ok) {
+      var w = dashjs_waiters.splice(0, dashjs_waiters.length);
+      for (var i = 0; i < w.length; i++) w[i](ok);
+    };
+    var urls = [
+      'https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js',
+      'https://unpkg.com/dashjs@4.7.4/dist/dash.all.min.js',
+      'https://cdn.jsdelivr.net/gh/yumata/Lampa@main/vender/dash/dash.js'
+    ];
+    var i = 0;
+    var next = function () {
+      if (typeof dashjs !== 'undefined') { done(true); return; }
+      if (i >= urls.length) { done(false); return; }
+      try {
+        var sc = document.createElement('script');
+        sc.src = urls[i++];
+        sc.onload = function () { done(typeof dashjs !== 'undefined'); };
+        sc.onerror = function () { next(); };
+        (document.head || document.documentElement).appendChild(sc);
+      } catch (e) { done(false); }
+    };
+    setTimeout(function () {
+      if (dashjs_loading) { dashjs_loading = false; done(typeof dashjs !== 'undefined'); }
+    }, 12000);
+    next();
   }
 
   function qualityLabel(fallback) {
@@ -409,11 +454,14 @@ function createKinokino(component, _object, prefer_dash) {
       validateSegments(function (alive) {
         if (alive || (attempt || 1) >= 3) {
           var probe_url = '';
+          var probe_hls = '';
 
           if (extract.source) {
             probe_url = pickFile(extract.source);
+            probe_hls = pickHls(extract.source);
           } else if (extract.playlist && extract.playlist.seasons.length && extract.playlist.seasons[0].episodes && extract.playlist.seasons[0].episodes.length) {
             probe_url = pickFile(extract.playlist.seasons[0].episodes[0]);
+            probe_hls = pickHls(extract.playlist.seasons[0].episodes[0]);
           }
 
           var finalize = function (h) {
@@ -424,14 +472,24 @@ function createKinokino(component, _object, prefer_dash) {
 
           probeQuality(probe_url, function (h, prox_ok) {
             if (!prox_ok && stream_prox) {
-              // прокси не отвечает плейлистом (воркер мёртв или адрес кривой) —
-              // сбрасываемся на прямые ссылки, чтобы хоть что-то открывалось,
-              // и перечитываем качество уже напрямую
-              stream_prox = '';
-              play_headers = makePlayHeaders();
-              probeQuality(probe_url, function (h2) {
-                finalize(h2);
-              });
+              /* v15.2: один медленный или битый mpd не должен отключать воркер
+               * на всей карточке (иначе DASH и звук уезжали в прямые ссылки).
+               * Сначала спрашиваем воркер про HLS-мастер: мёртв он действительно,
+               * только если и мастер не пришёл. Воркер жив — перечитываем mpd
+               * ещё раз (мог просто не уложиться в таймаут мобильной сети). */
+              probeQuality(probe_hls || probe_url, function (h2, prox_ok2) {
+                if (!prox_ok2) {
+                  stream_prox = '';
+                  play_headers = makePlayHeaders();
+                  probeQuality(probe_url, function (h3) {
+                    finalize(h3);
+                  });
+                } else {
+                  probeQuality(probe_url, function (h3, prox_ok3) {
+                    finalize(prox_ok3 && h3 ? h3 : (h || h2 || h3));
+                  });
+                }
+              }, true);
             } else finalize(h);
           });
         } else {
@@ -640,8 +698,14 @@ function createKinokino(component, _object, prefer_dash) {
            * чёрный экран. Тихо уходим на HLS-версию того же потока: там 720p,
            * зато гарантированно со звуком и озвучками. */
           if (!alt_on && mpd_now && !native_dash && element.alt_file && typeof dashjs === 'undefined') {
-            Lampa.Noty.show('KinoKino: в этой Lampa нет dash.js — включаю HLS со звуком (до 720p)');
-            do_play(true);
+            ensureDashJs(function (ok) {
+              if (ok) {
+                do_play(false); // dash.js доехал — играем честный mpd
+              } else {
+                Lampa.Noty.show('KinoKino: dash.js не загрузился — включаю HLS со звуком (до 720p)');
+                do_play(true);
+              }
+            });
             return;
           }
 
@@ -688,7 +752,7 @@ function createKinokino(component, _object, prefer_dash) {
           //      ok/master/vari/seg + статус или килобайты
           (function () {
             try {
-              var mark = (stream_prox ? 'W' : 'D') + (mpd_now ? 'P' : 'H') + (native_dash ? 'N' : 'I');
+              var mark = (stream_prox ? 'W' : 'D') + (mpd_now ? 'P' : 'H') + (native_dash ? 'N' : 'I') + ' ' + (detected_height || '?') + 'p';
               var pick = function (txt) {
                 var ls = (txt || '').split('\n');
                 for (var i = 0; i < ls.length; i++) {
