@@ -193,6 +193,34 @@ function createKinokino(component, _object, prefer_dash) {
     });
   }
 
+  /* ── v14: какое аудио лежит в DASH (LG webOS не декодирует Opus → видео без звука) ── */
+  function pickHls(src) {
+    if (!src) return '';
+    return src.hls || '';
+  }
+
+  function probeDashAudio(url, onDone) {
+    if (!url) {
+      onDone('', 0);
+      return;
+    }
+    var d = new Lampa.Reguest();
+    d.timeout(8000);
+    d.native(proxUrl(url, false), function (str) {
+      str = str || '';
+      var codecs = [];
+      var re = /<AdaptationSet[^>]*contentType="audio"[^>]*>[\s\S]{0,400}?codecs="([^"]+)"/g;
+      var m;
+      while ((m = re.exec(str))) if (codecs.indexOf(m[1]) === -1) codecs.push(m[1]);
+      onDone(codecs.join(','), 0);
+    }, function () {
+      onDone('', 0);
+    }, false, {
+      dataType: 'text',
+      headers: play_headers
+    });
+  }
+
   function qualityLabel(fallback) {
     if (detected_height) return detected_height + 'p';
     return '360p ~ ' + fallback;
@@ -433,6 +461,7 @@ function createKinokino(component, _object, prefer_dash) {
               };
             });
             var file = fixUrl(pickFile(episode), true);
+            var alt = proxUrl(fixUrl(pickHls(episode), true), use_mono);
             filtred.push({
               title: episode.title,
               quality: qualityLabel(fallback),
@@ -440,6 +469,7 @@ function createKinokino(component, _object, prefer_dash) {
               season: season.season,
               episode: parseInt(episode.episode),
               file: proxUrl(file, use_mono),
+              alt_file: alt,
               subtitles: episode.cc ? episode.cc.map(function (c) {
                 var url = fixUrl(c.url || '');
                 return {
@@ -460,11 +490,13 @@ function createKinokino(component, _object, prefer_dash) {
         };
       });
       var file = fixUrl(pickFile(extract.source), true);
+      var alt = proxUrl(fixUrl(pickHls(extract.source), true), use_mono);
       filtred.push({
         title: extract.title || select_title,
         quality: qualityLabel(fallback),
         info: names.length ? ' / ' + component.uniqueNamesShortText(names, 80) : '',
         file: proxUrl(file, use_mono),
+        alt_file: alt,
         subtitles: extract.source.cc ? extract.source.cc.map(function (c) {
           var url = fixUrl(c.url || '');
           return {
@@ -500,9 +532,11 @@ function createKinokino(component, _object, prefer_dash) {
         if (object.movie.id) Lampa.Favorite.add('history', object.movie, 100);
 
         if (element.file) {
+          var do_play = function (alt_on) {
           var playlist = [];
+          var play_file = function (el) { return alt_on && el.alt_file ? el.alt_file : el.file; };
           var first = {
-            url: component.getDefaultQuality(null, element.file),
+            url: component.getDefaultQuality(null, play_file(element)),
             subtitles: element.subtitles,
             translate: {
               tracks: element.audio_tracks
@@ -519,7 +553,7 @@ function createKinokino(component, _object, prefer_dash) {
           if (element.season) {
             items.forEach(function (elem) {
               playlist.push({
-                url: component.getDefaultQuality(null, elem.file),
+                url: component.getDefaultQuality(null, play_file(elem)),
                 subtitles: elem.subtitles,
                 translate: {
                   tracks: elem.audio_tracks
@@ -615,6 +649,21 @@ function createKinokino(component, _object, prefer_dash) {
           }
           Lampa.Player.play(first);
           Lampa.Player.playlist(playlist);
+          };
+          // v14: на webOS/Tizen перед стартом DASH смотрим аудио-кодеки mpd:
+          // только Opus → системный плеер LG озвучить не сможет → играем HLS
+          // (звук есть, честно до 720p) и объясняем это уведомлением
+          if (prefer_dash && dashActive() && element.alt_file && (Lampa.Platform.is('webos') || Lampa.Platform.is('tizen'))) {
+            probeDashAudio(element.file, function (codecs) {
+              var has_bad = codecs && codecs.split(',').some(function (c) { return c.indexOf('opus') !== -1; });
+              var has_good = codecs && /mp4a|ac-3|ec-3/.test(codecs);
+              var opus_only = !!has_bad && !has_good;
+              if (opus_only) Lampa.Noty.show('KinoKino: DASH на LG без звука (Opus) — включаю HLS со звуком');
+              do_play(opus_only);
+            });
+          } else {
+            do_play(false);
+          }
 
           if (viewed.indexOf(hash_file) == -1) {
             viewed.push(hash_file);
