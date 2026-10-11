@@ -369,6 +369,16 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
     ok('C: без живого воркера на Android играем внешним плеером (не встроенным)', captured.runas === 'android', 'runas=' + JSON.stringify(captured.runas));
   }
 
+  /* ── F. v16.4: прокси не настроен вообще → дефолтный воркер вшит ── */
+  store.online_mod_proxy_other = false;
+  delete store.online_mod_proxy_other_url;
+  item = await runCard(EVIL, 'F. БЕЗ настроек прокси (дефолт v16.4)');
+  ok('F: список построен', !!item);
+  if (item) {
+    ok('F: ссылки идут через дефолтный воркер (как в оригинале — без ручных настроек)',
+      (item.file || '').indexOf('https://lampa-bridge.netlify.app/enc2/') === 0, (item.file || '').slice(0, 60));
+  }
+
   report();
   process.exit(results.some((r) => !r.pass) ? 1 : 0);
 })();
