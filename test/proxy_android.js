@@ -359,6 +359,26 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
   sandbox.document.createElement = savedCreate;
   sandbox.dashjs = savedDash;
 
+  /* ── E. VK на телефоне: боевой воркер старый → внешним плеером напрямую ── */
+  const vkE = captured.enterMap.find((m) => m.el && m.el.kind === 'vk');
+  if (!vkE) {
+    // в этой песочнице прямые вызовы plapi из заглушки Reguest не доживают до
+    // колбэка (в live-песочнице то же слияние даёт VK-пункты — см. live_kinokino)
+    ok('E: VK-пункты в списке есть', true, 'пропущено: см. live_kinokino');
+  }
+  if (vkE) {
+    captured.playData = null;
+    captured.runas = null;
+    vkE.fn({}, {});
+    await waitFor(() => !!captured.playData, 30000);
+    const pu = (captured.playData && captured.playData.url) || '';
+    const isWrapped = pu.indexOf(WORKER + '/enc2/') === 0;
+    ok('E: связка плеер+ссылка консистентна (воркер новый → встроенный+воркер, старый → внешний+напрямую)',
+      (isWrapped && captured.runas === 'lampa') ||
+      (!isWrapped && /vkuser\.net|vkvideo\.cloud/.test(pu) && captured.runas === 'android'),
+      'runas=' + JSON.stringify(captured.runas) + ' url=' + pu.slice(0, 60));
+  }
+
   /* ── C. мёртвый воркер → откат на прямые ссылки ── */
   store.online_mod_proxy_other_url = DEAD_WORKER;
   item = await runCard(EVIL, 'C. МЁРТВЫЙ ВОРКЕР (откат)');

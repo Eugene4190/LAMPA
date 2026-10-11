@@ -258,17 +258,40 @@ function createKinokino(component, _object, prefer_dash) {
     });
   }
 
-  function vkStream(data_id, wrapped, onDone) {
+  function vkSources(data_id, onDone) {
     var d = new Lampa.Reguest();
     d.timeout(10000);
     // список ступеней — напрямую (CORS открыт); важны не URL-токены из него,
-    // а сам факт ступеней: воркер перевыпустит токен под свой IP сам
+    // а сам факт ступеней: свежий воркер перевыпустит токен под свой IP сам
     d.native(VK_API + 'video/' + data_id, function (json) {
-      onDone(json && json.sources ? vkQualityMap(json.sources, data_id, wrapped) : []);
+      onDone(json && json.sources ? json.sources : null);
     }, function () {
-      onDone([]);
+      onDone(null);
     }, false, {
       dataType: 'json'
+    });
+  }
+
+  /* v16.5: умеет ли живой воркер перевыпускать VK-токен (param/vk)? Деплой
+   * Netlify заморожен кредитами, в бою может стоять старая версия воркера —
+   * спрашиваем её саму одним байтом: свежий воркер вернёт 206/200, старый —
+   * 400/502 (токен с чужим srcIp). По ответу выбираем, чем играть. */
+  function vkWorkerCan(data_id, wrappedUrl, onDone) {
+    if (!wrappedUrl) {
+      onDone(false);
+      return;
+    }
+    var d = new Lampa.Reguest();
+    d.timeout(8000);
+    d.native(wrappedUrl, function () {
+      onDone(true);
+    }, function () {
+      onDone(false);
+    }, false, {
+      dataType: 'text',
+      headers: {
+        Range: 'bytes=0-0'
+      }
     });
   }
 
@@ -292,33 +315,59 @@ function createKinokino(component, _object, prefer_dash) {
 
   function vkPlay(element, options) {
     component.loading(true);
-    var wrapped = !!stream_prox && !tv_native && !no_mse;
-    vkStream(element.data_id, wrapped, function (map) {
+    vkSources(element.data_id, function (sources) {
       component.loading(false);
-      if (!map.length) {
-        Lampa.Noty.show('KinoKino: VK-поток не получен (токен или озвучка недоступны)');
+      if (!sources) {
+        Lampa.Noty.show('KinoKino: VK-поток не получен (озвучка недоступна)');
         return;
       }
-      var quality = {};
-      map.forEach(function (m) { quality[m.label] = m.file; });
-      var first = {
-        url: component.getDefaultQuality(quality, map[0].file),
-        quality: component.renameQualityMap(quality),
-        timeline: element.timeline,
-        title: select_title + ' / ' + element.title,
-        subtitles: false
-      };
-      // MP4 со вшитым звуком играет кто угодно: на ТВ системным плеером,
-      // на телефоне/в браузере — встроенным (тег video, без Origin)
-      if (options && options.runas) Lampa.Player.runas(options.runas);
-      else if (Lampa.Player.runas) {
-        if (tv_native) Lampa.Player.runas(Lampa.Platform.is('tizen') ? 'tizen' : 'webos');
-        else if (!stream_prox && Lampa.Platform.is('android')) Lampa.Player.runas('android');
-        else if (no_mse) Lampa.Player.runas('');
-        else Lampa.Player.runas('lampa');
+      var mapD = vkQualityMap(sources, element.data_id, false); // напрямую
+      var mapW = vkQualityMap(sources, element.data_id, true);  // через воркер
+      if (!mapD.length) {
+        Lampa.Noty.show('KinoKino: у этой озвучки нет потоков');
+        return;
       }
-      Lampa.Player.play(first);
-      Lampa.Player.playlist([first]);
+
+      var launch = function (map, via_worker) {
+        var quality = {};
+        map.forEach(function (m) { quality[m.label] = m.file; });
+        var first = {
+          url: component.getDefaultQuality(quality, map[0].file),
+          quality: component.renameQualityMap(quality),
+          timeline: element.timeline,
+          title: select_title + ' / ' + element.title,
+          subtitles: false
+        };
+        // MP4 со вшитым звуком играет кто угодно: на ТВ системным плеером,
+        // на телефоне — встроенным через воркер (WebView шлёт Origin, а VK
+        // его отбивает), а если воркер ещё старый — внешним плеером напрямую
+        if (options && options.runas) Lampa.Player.runas(options.runas);
+        else if (Lampa.Player.runas) {
+          if (tv_native) Lampa.Player.runas(Lampa.Platform.is('tizen') ? 'tizen' : 'webos');
+          else if (via_worker) Lampa.Player.runas('lampa');
+          else if (Lampa.Platform.is('android')) Lampa.Player.runas('android');
+          else if (no_mse) Lampa.Player.runas('');
+          else Lampa.Player.runas('lampa');
+        }
+        Lampa.Player.play(first);
+        Lampa.Player.playlist([first]);
+      };
+
+      if (tv_native || no_mse) {
+        launch(mapD, false); // ТВ и orsay: напрямую, системным плеером
+      } else if (!stream_prox) {
+        launch(mapD, false); // нет воркера: телефон отдаём внешнему плееру
+      } else {
+        // телефон/браузер с воркером: сначала пробуем воркер одним байтом
+        var probe = mapW[0] ? mapW[mapW.length - 1].file : '';
+        vkWorkerCan(element.data_id, probe, function (can) {
+          if (can) launch(mapW, true);
+          else {
+            Lampa.Noty.show('KinoKino: воркер старый — VK играю внешним плеером (VLC и т.п.)');
+            launch(mapD, false);
+          }
+        });
+      }
     });
   }
 
