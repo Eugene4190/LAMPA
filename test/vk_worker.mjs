@@ -1,0 +1,13 @@
+import worker from '../kinokino_worker.js';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const b64u = (s) => Buffer.from(s, 'binary').toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const pl = await (await fetch('https://plapi.cdnvideohub.com/api/v1/player/sv/playlist?pub=12&aggr=kp&id=4664634')).json();
+const vk = pl.items[2].vkId;
+console.log('vkId:', vk, '|', pl.items[2].voiceStudio);
+const meta = 'param/User-Agent=' + encodeURIComponent(UA) + '/param/vk=' + vk + '/param/q=1080p/https://vk.placeholder/video.mp4';
+const url = 'https://lampa-bridge.netlify.app/enc2/' + b64u(meta) + '/video.mp4';
+const r = await worker.fetch({ method: 'GET', url, headers: { get: () => null } });
+console.log('full:', r.status, r.headers.get('content-type'), 'CL:', r.headers.get('content-length'));
+const r2 = await worker.fetch({ method: 'GET', url, headers: { get: (k) => (k === 'range' ? 'bytes=2000000-2300000' : null) } });
+const buf = new Uint8Array(await r2.arrayBuffer());
+console.log('range:', r2.status, r2.headers.get('content-range'), 'bytes:', buf.length, 'ftyp:', String.fromCharCode(buf[4],buf[5],buf[6],buf[7]));

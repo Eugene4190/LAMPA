@@ -47,6 +47,7 @@ const LOG = []; // «чёрный ящик»: последние запросы 
  * Пустые строки игнорируются; свой адрес исключается автоматически. */
 const BRIDGES = [
   'https://lampa.eugene4190.deno.net/',  // приостановлен (billing/usage) — оживёт, сам подхватится
+  'https://lampa-bridge.netlify.app/',   // v16.3: нетли-ребро страхует CF-воркер от антибота Collaps
   '', // ← сюда можно вписать адрес второго напарника: 'https://ИМЯ.netlify.app/'
 ].filter(Boolean);
 
@@ -181,6 +182,31 @@ async function handle(request) {
 
     const DOLLAR = String.fromCharCode(36); // '$' без литерала (безопасно для heredoc/редактур)
     const UA = params['User-Agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+        /* v16.2: VK Video CDN (CDNVideoHub). Токен VK привязан к IP клиента
+         * (srcIp=... в URL), а у эджа много инстансов с разными IP — поэтому
+         * каждый запрос сам перевыпускает токен с IP ЭТОГО же инстанса:
+         * param/vk=<vkId> + param/q=<ступень> -> plapi video/<vkId> -> sources.
+         * Заодно токены всегда свежие (expires не сюрприз). */
+        if (params.vk) {
+          const VK_KEYS = {
+            '4K': 'mpeg2kUrl', '2K': 'mpeg4kUrl', '1440p': 'mpegQhdUrl',
+            '1080p': 'mpegFullHdUrl', '720p': 'mpegHighUrl', '480p': 'mpegMediumUrl',
+            '360p': 'mpegLowUrl', '240p': 'mpegLowestUrl', '144p': 'mpegTinyUrl',
+          };
+          try {
+            const vr = await fetch('https://plapi.cdnvideohub.com/api/v1/player/sv/video/' + params.vk, {
+              headers: { 'User-Agent': UA, 'Accept': '*/*' },
+            });
+            if (vr.status < 400) {
+              const jj = await vr.json();
+              const fresh = jj && jj.sources && jj.sources[VK_KEYS[params.q] || 'mpegFullHdUrl'];
+              if (fresh) link = fresh;
+            }
+          } catch (e) { /* остаёмся на исходном link */ }
+        }
+    
+        // v13: DASH-хвост.
     const wrap = (u) => {
       let clean = unwrap(u); // снимает и наши, и чужие/мёртвые обёртки
       // v13: DASH-шаблоны ($Number$, $Time$…) оставляем СНАРУЖИ обёртки: плеер

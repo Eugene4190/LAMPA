@@ -92,7 +92,7 @@ function makeStorage() {
 
 function makeItemStub(el) {
   return {
-    on: (ev, fn) => { if (ev === 'hover:enter') captured.enter = fn; },
+    on: (ev, fn) => { if (ev === 'hover:enter') { captured.enter = fn; captured.enters.push(fn); captured.enterMap.push({ el, fn }); } },
     append: () => {},
     find: () => ({ append: () => {} }),
   };
@@ -221,6 +221,8 @@ async function runCard(movie, label, balanser) {
   captured.items = [];
   captured.netCalls = [];
   captured.enter = null;
+  captured.enters = [];
+  captured.enterMap = [];
   captured.runas = null;
   captured.playData = null;
   captured.noty = '';
@@ -273,7 +275,7 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
     ok('A: расширение master.m3u8 сохранено', /master\.m3u8$/.test(item.file || ''), (item.file || '').slice(-30));
 
     // имитируем нажатие «играть»
-    if (captured.enter) captured.enter({}, {});
+    if (captured.enters[0]) captured.enters[0]({}, {});
     ok('A: на Android с воркером играем встроенным плеером Lampa (hls.js/dash.js)', captured.runas === 'lampa', 'runas=' + JSON.stringify(captured.runas));
     ok('A: в плеер уехала ссылка через воркер', captured.playData && (captured.playData.url || '').indexOf(normalized) === 0, captured.playData ? (captured.playData.url || '').slice(0, 70) : 'нет play()');
 
@@ -308,7 +310,7 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
     ok('B: отдан mpd через воркер (1080p+, а не 720p HLS)', /\.mpd$/.test(item.file || '') && (item.file || '').indexOf(WORKER + '/enc2/') === 0, (item.file || '').slice(0, 90));
     ok('B: качество подписано честно по mpd', /1080p|2160p|4K/.test(item.quality || ''), item.quality);
     ok('B: переводы (аудиодорожки) в списке остались', (item.audio_tracks || []).length > 1, String((item.audio_tracks || []).length));
-    if (captured.enter) captured.enter({}, {});
+    if (captured.enters[0]) captured.enters[0]({}, {});
     ok('B: mpd играет встроенный плеер Lampa (runas=lampa)', captured.runas === 'lampa', 'runas=' + JSON.stringify(captured.runas));
     const mpdUrl = captured.playData && captured.playData.url;
     if (mpdUrl) {
@@ -328,6 +330,12 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
     } else ok('B: воркер отдаёт mpd', false, 'нет url');
   }
 
+  /* ── E. VK 4K-пункты: слияние списка проверяет test/live_kinokino.js,
+   * а провождение MP4 через воркер (param/vk + param/q, Range 206) —
+   * test/vk_worker.mjs: в этой песочнице прямые вызовы plapi из заглушки
+   *Reguest нестабильны, а боевой воркер обновится только после разморозки
+   * деплоев Netlify. ── */
+
   /* ── D. нет dash.js (старая Lampa) → откат mpd на HLS со звуком ── */
   const savedDash = sandbox.dashjs;
   const savedCreate = sandbox.document.createElement;
@@ -341,7 +349,7 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
   item = await runCard(OPPEN, 'D. DASH-балансер, но dash.js не подгрузился', 'kinokino_dash');
   ok('D: список построен', !!item);
   if (item) {
-    if (captured.enter) captured.enter({}, {});
+    if (captured.enters[0]) captured.enters[0]({}, {});
     // откат на HLS происходит асинхронно (пока dash.js «не загрузится»)
     await waitFor(() => !!captured.playData, 8000);
     const u = (captured.playData && captured.playData.url) || '';
@@ -357,7 +365,7 @@ const OPPEN = { id: 3, title: 'Оппенгеймер', original_title: 'Oppenhe
   ok('C: список построен несмотря на мёртвый воркер', !!item);
   if (item) {
     ok('C: откат на прямые ссылки (без /enc2/)', /^https:\/\/(?!kinokino-worker-dead)/.test(item.file || '') && (item.file || '').indexOf('/enc2/') === -1, (item.file || '').slice(0, 80));
-    if (captured.enter) captured.enter({}, {});
+    if (captured.enters[0]) captured.enters[0]({}, {});
     ok('C: без живого воркера на Android играем внешним плеером (не встроенным)', captured.runas === 'android', 'runas=' + JSON.stringify(captured.runas));
   }
 

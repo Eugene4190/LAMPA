@@ -168,14 +168,27 @@ function createKinokino(component, _object, prefer_dash) {
    * зеркалит Origin в ACAO — CORS открыт), MP4 играем тегом video/нативным
    * плеером без Origin (200, Accept-Ranges: bytes, Range 206). Через воркер
    * это не повторить: у эджа другой IP, чем у токена. */
-  function vkWrap(url) {
-    return url || '';
+  /* v16.2: на телефоне/в браузере встроенный плеер шлёт заголовок Origin, а VK
+   * CDN такие запросы отбивает (400) — системные плееры ТВ Origin не шлют,
+   * потому на ТВ эти же ссылки играют напрямую. Значит: ТВ/orsay — напрямую,
+   * телефон/браузер — через воркер, который на каждый запрос сам перевыпускает
+   * токен под свой IP (param/vk + param/q), обходя привязку srcIp. */
+  function vkWrapUrl(url, label, vkId) {
+    if (!url) return url;
+    if (!stream_prox) return url;
+    if (url.indexOf(stream_prox) === 0) return url;
+    return stream_prox + 'enc2/' + b64url(
+      'param/User-Agent=' + encodeURIComponent(DESKTOP_UA) +
+      '/param/vk=' + vkId +
+      '/param/q=' + encodeURIComponent(label) +
+      '/' + url
+    ) + '/video.mp4';
   }
 
-  function vkQualityMap(sources) {
+  function vkQualityMap(sources, vkId, wrapped) {
     var map = [];
     var push = function (label, q, url) {
-      if (url) map.push({ label: label, quality: q, file: vkWrap(url) });
+      if (url) map.push({ label: label, quality: q, file: wrapped ? vkWrapUrl(url, label, vkId) : url });
     };
     /* подписи 2k/4k у CDNVideoHub перепутаны местами (как и у автора плагина) */
     push('4K', 2160, sources.mpeg2kUrl);
@@ -199,7 +212,8 @@ function createKinokino(component, _object, prefer_dash) {
     }
     var d = new Lampa.Reguest();
     d.timeout(10000);
-    d.native(vkWrap(VK_API + 'playlist?pub=12&aggr=kp&id=' + last_id), function (json) {
+    // plapi зеркалит Origin в ACAO — список озвучек тянем напрямую всегда
+    d.native(VK_API + 'playlist?pub=12&aggr=kp&id=' + last_id, function (json) {
       var out = [];
       if (json && json.items && json.items.forEach) {
         json.items.forEach(function (it) {
@@ -214,11 +228,13 @@ function createKinokino(component, _object, prefer_dash) {
     });
   }
 
-  function vkStream(data_id, onDone) {
+  function vkStream(data_id, wrapped, onDone) {
     var d = new Lampa.Reguest();
     d.timeout(10000);
-    d.native(vkWrap(VK_API + 'video/' + data_id), function (json) {
-      onDone(json && json.sources ? vkQualityMap(json.sources) : []);
+    // список ступеней — напрямую (CORS открыт); важны не URL-токены из него,
+    // а сам факт ступеней: воркер перевыпустит токен под свой IP сам
+    d.native(VK_API + 'video/' + data_id, function (json) {
+      onDone(json && json.sources ? vkQualityMap(json.sources, data_id, wrapped) : []);
     }, function () {
       onDone([]);
     }, false, {
@@ -246,7 +262,8 @@ function createKinokino(component, _object, prefer_dash) {
 
   function vkPlay(element, options) {
     component.loading(true);
-    vkStream(element.data_id, function (map) {
+    var wrapped = !!stream_prox && !tv_native && !no_mse;
+    vkStream(element.data_id, wrapped, function (map) {
       component.loading(false);
       if (!map.length) {
         Lampa.Noty.show('KinoKino: VK-поток не получен (токен или озвучка недоступны)');
@@ -266,6 +283,7 @@ function createKinokino(component, _object, prefer_dash) {
       if (options && options.runas) Lampa.Player.runas(options.runas);
       else if (Lampa.Player.runas) {
         if (tv_native) Lampa.Player.runas(Lampa.Platform.is('tizen') ? 'tizen' : 'webos');
+        else if (!stream_prox && Lampa.Platform.is('android')) Lampa.Player.runas('android');
         else if (no_mse) Lampa.Player.runas('');
         else Lampa.Player.runas('lampa');
       }
