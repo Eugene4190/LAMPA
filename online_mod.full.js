@@ -76,6 +76,7 @@ function createKinokino(component, _object, prefer_dash) {
   var detected_height = 0;
   var detected_bitrate = 0; // v15: максимум из mpd, кбит/с (для старта dash.js)
   var detected_bitrate = 0; // v15: максимум из mpd, кбит/с (для старта dash.js)
+  var detected_bitrate = 0; // v15: максимум из mpd, кбит/с (для старта dash.js)
   var prefer_http = Lampa.Storage.field('online_mod_prefer_http') === true;
 
   var API = 'https://fbphdplay.top/api/players';
@@ -1042,6 +1043,10 @@ function createKinokino(component, _object, prefer_dash) {
             else if (no_mse) Lampa.Player.runas('');
             else Lampa.Player.runas('lampa');
           }
+          // v15: mpd во встроенном плеере — заранее кладём dash.js стартовый
+          // битрейт, иначе он начнёт с 486p и (ABR выключен) так и останется
+          if (mpd_now && !native_dash) seedDashBitrate(detected_bitrate || 20000);
+
           // v15: mpd во встроенном плеере — заранее кладём dash.js стартовый
           // битрейт, иначе он начнёт с 486p и (ABR выключен) так и останется
           if (mpd_now && !native_dash) seedDashBitrate(detected_bitrate || 20000);
